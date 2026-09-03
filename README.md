@@ -1,28 +1,22 @@
 <div align="center">
   <h1 align="center">Unitree Go2 RL Gym</h1>
-  <p align="center">
-    <span> 🌎English </span> | <a href="README_zh.md"> 🇨🇳中文 </a>
-  </p>
 </div>
 
 <p align="center">
-  <strong>Reinforcement learning training and real-robot deployment for the Unitree Go2.</strong>
+  <strong>用于 Unitree Go2 的强化学习训练、仿真与真机部署。</strong>
 </p>
 
 > [!IMPORTANT]
-> This project is a modified fork of Unitree Robotics' official
-> [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) repository.
-> It is maintained independently for Unitree Go2 reinforcement learning training,
-> simulation, and deployment on a physical robot. This is **not an official Unitree
-> Robotics project**, and it is not affiliated with or endorsed by Unitree Robotics.
+> 本项目基于 Unitree 官方的
+> [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym)
+> 进行修改，用于 Unitree Go2 的强化学习训练、仿真验证和真机部署。
+> **本项目不是 Unitree 官方项目，与 Unitree Robotics 无隶属或背书关系。**
 
-## About This Fork
+## 项目说明
 
-This repository adapts the upstream `unitree_rl_gym` project for a workflow focused
-on the Unitree Go2, including policy training, policy evaluation, simulation-to-
-simulation validation, and deployment to real hardware. Unless stated otherwise,
-the documentation and source code inherited from upstream remain subject to their
-original copyright notices and license terms.
+本仓库在上游 `unitree_rl_gym` 的基础上进行了针对 Unitree Go2 的适配，
+覆盖策略训练、效果预览、Sim2Sim 验证以及真机部署流程。除非另有说明，
+从上游项目保留的代码和文档仍遵循原有版权声明与许可证条款。
 
 <div align="center">
 
@@ -34,70 +28,70 @@ original copyright notices and license terms.
 
 ---
 
-## 📦 Installation and Configuration
+## 📦 安装配置
 
-Please refer to [setup.md](/doc/setup_en.md) for installation and configuration steps.
+安装和配置步骤请参考 [setup.md](/doc/setup_zh.md)
 
-## 🔁 Process Overview
+## 🔁 流程说明
 
-The basic workflow for using reinforcement learning to achieve motion control is:
+强化学习实现运动控制的基本流程为：
 
 `Train` → `Play` → `Sim2Sim` → `Sim2Real`
 
-- **Train**: Use the Gym simulation environment to let the robot interact with the environment and find a policy that maximizes the designed rewards. Real-time visualization during training is not recommended to avoid reduced efficiency.
-- **Play**: Use the Play command to verify the trained policy and ensure it meets expectations.
-- **Sim2Sim**: Deploy the Gym-trained policy to other simulators to ensure it’s not overly specific to Gym characteristics.
-- **Sim2Real**: Deploy the policy to a physical robot to achieve motion control.
+- **Train**: 通过 Gym 仿真环境，让机器人与环境互动，找到最满足奖励设计的策略。通常不推荐实时查看效果，以免降低训练效率。
+- **Play**: 通过 Play 命令查看训练后的策略效果，确保策略符合预期。
+- **Sim2Sim**: 将 Gym 训练完成的策略部署到其他仿真器，避免策略小众于 Gym 特性。
+- **Sim2Real**: 将策略部署到实物机器人，实现运动控制。
 
-## 🛠️ User Guide
+## 🛠️ 使用指南
 
-### 1. Training
+### 1. 训练
 
-Run the following command to start training:
+运行以下命令进行训练：
 
 ```bash
 python legged_gym/scripts/train.py --task=xxx
 ```
 
-#### ⚙️ Parameter Description
-- `--task`: Required parameter; values can be (go2, g1, h1, h1_2).
-- `--headless`: Defaults to starting with a graphical interface; set to true for headless mode (higher efficiency).
-- `--resume`: Resume training from a checkpoint in the logs.
-- `--experiment_name`: Name of the experiment to run/load.
-- `--run_name`: Name of the run to execute/load.
-- `--load_run`: Name of the run to load; defaults to the latest run.
-- `--checkpoint`: Checkpoint number to load; defaults to the latest file.
-- `--num_envs`: Number of environments for parallel training.
-- `--seed`: Random seed.
-- `--max_iterations`: Maximum number of training iterations.
-- `--sim_device`: Simulation computation device; specify CPU as `--sim_device=cpu`.
-- `--rl_device`: Reinforcement learning computation device; specify CPU as `--rl_device=cpu`.
+#### ⚙️  参数说明
+- `--task`: 必选参数，值可选(go2, g1, h1, h1_2)
+- `--headless`: 默认启动图形界面，设为 true 时不渲染图形界面（效率更高）
+- `--resume`: 从日志中选择 checkpoint 继续训练
+- `--experiment_name`: 运行/加载的 experiment 名称
+- `--run_name`: 运行/加载的 run 名称
+- `--load_run`: 加载运行的名称，默认加载最后一次运行
+- `--checkpoint`: checkpoint 编号，默认加载最新一次文件
+- `--num_envs`: 并行训练的环境个数
+- `--seed`: 随机种子
+- `--max_iterations`: 训练的最大迭代次数
+- `--sim_device`: 仿真计算设备，指定 CPU 为 `--sim_device=cpu`
+- `--rl_device`: 强化学习计算设备，指定 CPU 为 `--rl_device=cpu`
 
-**Default Training Result Directory**: `logs/<experiment_name>/<date_time>_<run_name>/model_<iteration>.pt`
+**默认保存训练结果**：`logs/<experiment_name>/<date_time>_<run_name>/model_<iteration>.pt`
 
 ---
 
 ### 2. Play
 
-To visualize the training results in Gym, run the following command:
+如果想要在 Gym 中查看训练效果，可以运行以下命令：
 
 ```bash
 python legged_gym/scripts/play.py --task=xxx
 ```
 
-**Description**:
+**说明**：
 
-- Play’s parameters are the same as Train’s.
-- By default, it loads the latest model from the experiment folder’s last run.
-- You can specify other models using `load_run` and `checkpoint`.
+- Play 启动参数与 Train 相同。
+- 默认加载实验文件夹上次运行的最后一个模型。
+- 可通过 `load_run` 和 `checkpoint` 指定其他模型。
 
-#### 💾 Export Network
+#### 💾 导出网络
 
-Play exports the Actor network, saving it in `logs/{experiment_name}/exported/policies`:
-- Standard networks (MLP) are exported as `policy_1.pt`.
-- RNN networks are exported as `policy_lstm_1.pt`.
-
-### Play Results
+Play 会导出 Actor 网络，保存于 `logs/{experiment_name}/exported/policies` 中：
+- 普通网络（MLP）导出为 `policy_1.pt`
+- RNN 网络，导出为 `policy_lstm_1.pt`
+  
+### Play 效果
 
 | Go2 | G1 | H1 | H1_2 |
 |--- | --- | --- | --- |
@@ -107,26 +101,26 @@ Play exports the Actor network, saving it in `logs/{experiment_name}/exported/po
 
 ### 3. Sim2Sim (Mujoco)
 
-Run Sim2Sim in the Mujoco simulator:
+支持在 Mujoco 仿真器中运行 Sim2Sim：
 
 ```bash
 python deploy/deploy_mujoco/deploy_mujoco.py {config_name}
 ```
 
-#### Parameter Description
-- `config_name`: Configuration file; default search path is `deploy/deploy_mujoco/configs/`.
+#### 参数说明
+- `config_name`: 配置文件，默认查询路径为 `deploy/deploy_mujoco/configs/`
 
-#### Example: Running G1
+#### 示例：运行 G1
 
 ```bash
 python deploy/deploy_mujoco/deploy_mujoco.py g1.yaml
 ```
 
-#### ➡️ Replace Network Model
+#### ➡️  替换网络模型
 
-The default model is located at `deploy/pre_train/{robot}/motion.pt`; custom-trained models are saved in `logs/g1/exported/policies/policy_lstm_1.pt`. Update the `policy_path` in the YAML configuration file accordingly.
+默认模型位于 `deploy/pre_train/{robot}/motion.pt`；自己训练模型保存于`logs/g1/exported/policies/policy_lstm_1.pt`，只需替换 yaml 配置文件中 `policy_path`。
 
-#### Simulation Results
+#### 运行效果
 
 | G1 | H1 | H1_2 |
 |--- | --- | --- |
@@ -135,20 +129,19 @@ The default model is located at `deploy/pre_train/{robot}/motion.pt`; custom-tra
 
 ---
 
-### 4. Sim2Real (Physical Deployment)
+### 4. Sim2Real (实物部署)
 
-Before deploying to the physical robot, ensure it’s in debug mode. Detailed steps can be found in the [Physical Deployment Guide](deploy/deploy_real/README.md):
+实现实物部署前，确保机器人进入调试模式。详细步骤请参考 [实物部署指南](deploy/deploy_real/README.zh.md)：
 
 ```bash
 python deploy/deploy_real/deploy_real.py {net_interface} {config_name}
 ```
 
+#### 参数说明
+- `net_interface`: 连接机器人网卡名称，如 `enp3s0`
+- `config_name`: 配置文件，存在于 `deploy/deploy_real/configs/`，如 `g1.yaml`，`h1.yaml`，`h1_2.yaml`
 
-#### Parameter Description
-- `net_interface`: Network card name connected to the robot, e.g., `enp3s0`.
-- `config_name`: Configuration file located in `deploy/deploy_real/configs/`, e.g., `g1.yaml`, `h1.yaml`, `h1_2.yaml`.
-
-#### Deployment Results
+#### 运行效果
 
 | G1 | H1 | H1_2 |
 |--- | --- | --- |
@@ -156,59 +149,23 @@ python deploy/deploy_real/deploy_real.py {net_interface} {config_name}
 
 ---
 
-#### Deploy with C++
-There is also an example of deploying the G1 pre-trained model in C++. the C++ code is located in the following directory.
+## 🎉  致谢
 
-```
-deploy/deploy_real/cpp_g1
-```
+本仓库开发离不开以下开源项目的支持与贡献，特此感谢：
 
-First, navigate to the directory above.
+- [legged\_gym](https://github.com/leggedrobotics/legged_gym): 构建训练与运行代码的基础。
+- [rsl\_rl](https://github.com/leggedrobotics/rsl_rl.git): 强化学习算法实现。
+- [mujoco](https://github.com/google-deepmind/mujoco.git): 提供强大仿真功能。
+- [unitree\_sdk2\_python](https://github.com/unitreerobotics/unitree_sdk2_python.git): 实物部署硬件通信接口。
 
-```base
-cd deploy/deploy_real/cpp_g1
-```
-
-The C++ implementation depends on the LibTorch library, download the LibTorch
-
-```bash
-wget https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-2.7.1%2Bcpu.zip
-unzip libtorch-cxx11-abi-shared-with-deps-2.7.1+cpu.zip
-```
-
-To build the project, executable the following steps
-
-```bash
-mkdir build
-cd build
-cmake ..
-make -j4
-```
-
-After successful compilation, executate the program with:
-
-```base
-./g1_deploy_run {net_interface}
-```
-
-Replace `{net_interface}` with your actual network interface name (e.g., eth0, wlan0).
-
-## 🎉 Acknowledgments
-
-This repository is built upon the support and contributions of the following open-source projects. Special thanks to:
-
-- [legged\_gym](https://github.com/leggedrobotics/legged_gym): The foundation for training and running codes.
-- [rsl\_rl](https://github.com/leggedrobotics/rsl_rl.git): Reinforcement learning algorithm implementation.
-- [mujoco](https://github.com/google-deepmind/mujoco.git): Providing powerful simulation functionalities.
-- [unitree\_sdk2\_python](https://github.com/unitreerobotics/unitree_sdk2_python.git): Hardware communication interface for physical deployment.
 
 ---
 
-## 🔖 License
+## 🔖  许可证
 
-This project is licensed under the [BSD 3-Clause License](./LICENSE):
-1. The original copyright notice must be retained.
-2. The project name or organization name may not be used for promotion.
-3. Any modifications must be disclosed.
+本项目根据 [BSD 3-Clause License](./LICENSE) 授权：
+1. 必须保留原始版权声明。
+2. 禁止以项目名或组织名作举。
+3. 声明所有修改内容。
 
-For details, please read the full [LICENSE file](./LICENSE).
+详情请阅读完整 [LICENSE 文件](./LICENSE)。
