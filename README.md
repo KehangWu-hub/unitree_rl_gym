@@ -1,13 +1,28 @@
 <div align="center">
-  <h1 align="center">Unitree RL GYM</h1>
+  <h1 align="center">Unitree Go2 RL Gym</h1>
   <p align="center">
     <span> 🌎English </span> | <a href="README_zh.md"> 🇨🇳中文 </a>
   </p>
 </div>
 
 <p align="center">
-  <strong>This is a repository for reinforcement learning implementation based on Unitree robots, supporting Unitree Go2, H1, H1_2, and G1.</strong> 
+  <strong>Reinforcement learning training and real-robot deployment for the Unitree Go2.</strong>
 </p>
+
+> [!IMPORTANT]
+> This project is a modified fork of Unitree Robotics' official
+> [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) repository.
+> It is maintained independently for Unitree Go2 reinforcement learning training,
+> simulation, and deployment on a physical robot. This is **not an official Unitree
+> Robotics project**, and it is not affiliated with or endorsed by Unitree Robotics.
+
+## About This Fork
+
+This repository adapts the upstream `unitree_rl_gym` project for a workflow focused
+on the Unitree Go2, including policy training, policy evaluation, simulation-to-
+simulation validation, and deployment to real hardware. Unless stated otherwise,
+the documentation and source code inherited from upstream remain subject to their
+original copyright notices and license terms.
 
 <div align="center">
 
@@ -197,4 +212,3 @@ This project is licensed under the [BSD 3-Clause License](./LICENSE):
 3. Any modifications must be disclosed.
 
 For details, please read the full [LICENSE file](./LICENSE).
-
