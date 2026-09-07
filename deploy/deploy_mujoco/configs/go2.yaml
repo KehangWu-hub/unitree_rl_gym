@@ -1,0 +1,19 @@
+policy_path: "{LEGGED_GYM_ROOT_DIR}/logs/rough_go2_45/exported/policies/policy_1.pt"
+deploy_config_path: "{LEGGED_GYM_ROOT_DIR}/logs/rough_go2_45/exported/params/deploy.yaml"
+xml_path: "{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/mjcf/scene_flat.xml"
+
+simulation_duration: 30.0
+simulation_dt: 0.002
+command: [0.5, 0.0, 0.0]
+
+# Match the Isaac Gym asset options used during training. The upstream MJCF
+# intentionally includes passive motor losses that are absent from this Gym task.
+model_overrides:
+  joint_damping: 0.0
+  armature: 0.0
+  friction_loss: 0.0
+  sliding_friction: 1.0
+
+fall_height: 0.12
+fall_tilt: 1.0
+realtime: true

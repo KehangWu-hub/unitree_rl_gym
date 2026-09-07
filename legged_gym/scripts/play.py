@@ -6,7 +6,7 @@ from legged_gym import LEGGED_GYM_ROOT_DIR
 
 import isaacgym
 from legged_gym.envs import *
-from legged_gym.utils import  get_args, export_policy_as_jit, task_registry, Logger
+from legged_gym.utils import get_args, export_deploy_config, export_policy_as_jit, task_registry, Logger
 
 import numpy as np
 import torch
@@ -23,7 +23,8 @@ def play(args):
     env_cfg.domain_rand.randomize_friction = False
     env_cfg.domain_rand.push_robots = False
 
-    env_cfg.env.test = True
+    # Keep interactive playback in real time; headless validation should run as fast as possible.
+    env_cfg.env.test = not args.headless
 
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
@@ -38,6 +39,9 @@ def play(args):
         path = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported', 'policies')
         export_policy_as_jit(ppo_runner.alg.actor_critic, path)
         print('Exported policy as jit script to: ', path)
+        params_path = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported', 'params')
+        deploy_cfg_path = export_deploy_config(env, params_path, args.task)
+        print('Exported deployment config to: ', deploy_cfg_path)
 
     for i in range(10*int(env.max_episode_length)):
         actions = policy(obs.detach())

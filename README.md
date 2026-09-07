@@ -90,6 +90,10 @@ python legged_gym/scripts/play.py --task=xxx
 Play 会导出 Actor 网络，保存于 `logs/{experiment_name}/exported/policies` 中：
 - 普通网络（MLP）导出为 `policy_1.pt`
 - RNN 网络，导出为 `policy_lstm_1.pt`
+
+Go2 在导出策略的同时还会生成
+`logs/rough_go2_45/exported/params/deploy.yaml`。该文件记录实际训练使用的
+观测缩放、关节顺序、默认角度、PD 参数、动作缩放和控制周期，必须与策略文件配套使用。
   
 ### Play 效果
 
@@ -106,6 +110,26 @@ Play 会导出 Actor 网络，保存于 `logs/{experiment_name}/exported/policie
 ```bash
 python deploy/deploy_mujoco/deploy_mujoco.py {config_name}
 ```
+
+Go2 使用45维真机可观测策略和专用运行器：
+
+```bash
+python deploy/deploy_mujoco/deploy_go2.py
+```
+
+无窗口快速验证：
+
+```bash
+python deploy/deploy_mujoco/deploy_go2.py --headless --no-realtime --duration 10
+```
+
+覆盖速度指令（前进速度、侧向速度、偏航角速度）：
+
+```bash
+python deploy/deploy_mujoco/deploy_go2.py --command 0.5 0.0 0.0
+```
+
+运行结束会输出是否跌倒、机身高度、最大倾角、最大力矩、位移和速度跟踪误差等JSON指标。
 
 #### 参数说明
 - `config_name`: 配置文件，默认查询路径为 `deploy/deploy_mujoco/configs/`
