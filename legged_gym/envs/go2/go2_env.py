@@ -1,4 +1,5 @@
 from legged_gym.envs.base.legged_robot import LeggedRobot
+from legged_gym.envs.go2.rewards import energy, joint_position_penalty
 import torch
 
 
@@ -19,10 +20,21 @@ class Go2Robot(LeggedRobot):
             dim=-1,
         )
 
-        # Keep the original 48-dimensional observation for the asymmetric
-        # critic.  This buffer is never exported with the actor policy.
+        # Follow the official asymmetric setup: the critic additionally sees
+        # simulator-only base velocity and joint effort.  This 60-dimensional
+        # buffer is never exported with the 45-dimensional actor policy.
         self.privileged_obs_buf = torch.cat(
-            (self.base_lin_vel * self.obs_scales.lin_vel, actor_obs), dim=-1
+            (
+                self.base_lin_vel * self.obs_scales.lin_vel,
+                self.base_ang_vel * self.obs_scales.ang_vel,
+                self.projected_gravity,
+                self.commands[:, :3] * self.commands_scale,
+                (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
+                self.dof_vel * self.obs_scales.dof_vel,
+                self.torques * 0.01,
+                self.actions,
+            ),
+            dim=-1,
         )
 
         if self.add_noise:
@@ -49,3 +61,13 @@ class Go2Robot(LeggedRobot):
         noise_vec[9 + 2 * self.num_actions : 9 + 3 * self.num_actions] = 0.0  # previous actions
 
         return noise_vec
+
+    def _reward_energy(self):
+        """Official Lab energy penalty translated to the tensor-based Gym API."""
+        return energy(self.dof_vel, self.torques)
+
+    def _reward_joint_pos(self):
+        """Penalize deviation from the default pose, with a stronger idle penalty."""
+        return joint_position_penalty(
+            self.dof_pos, self.default_dof_pos, self.commands, self.base_lin_vel
+        )

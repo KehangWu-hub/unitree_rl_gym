@@ -1,5 +1,5 @@
-policy_path: "{LEGGED_GYM_ROOT_DIR}/logs/rough_go2_45/exported/policies/policy_1.pt"
-deploy_config_path: "{LEGGED_GYM_ROOT_DIR}/logs/rough_go2_45/exported/params/deploy.yaml"
+policy_path: "{LEGGED_GYM_ROOT_DIR}/logs/rough_go2_45x60_rewards/exported/policies/policy_1.pt"
+deploy_config_path: "{LEGGED_GYM_ROOT_DIR}/logs/rough_go2_45x60_rewards/exported/params/deploy.yaml"
 xml_path: "{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/mjcf/scene_flat.xml"
 
 simulation_duration: 30.0

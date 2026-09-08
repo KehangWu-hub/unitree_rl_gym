@@ -5,7 +5,7 @@ class GO2RoughCfg( LeggedRobotCfg ):
         num_observations = 45
         # The actor only sees signals available on the robot.  The critic keeps
         # the simulator-only base linear velocity during training.
-        num_privileged_obs = 48
+        num_privileged_obs = 60
 
     class init_state( LeggedRobotCfg.init_state ):
         pos = [0.0, 0.0, 0.42] # x,y,z [m]
@@ -45,17 +45,30 @@ class GO2RoughCfg( LeggedRobotCfg ):
         self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
   
     class rewards( LeggedRobotCfg.rewards ):
+        only_positive_rewards = False
         soft_dof_pos_limit = 0.9
         base_height_target = 0.25
         class scales( LeggedRobotCfg.rewards.scales ):
+            tracking_lin_vel = 1.5
+            tracking_ang_vel = 0.75
+            lin_vel_z = -2.0
+            ang_vel_xy = -0.05
+            dof_vel = -0.001
+            dof_acc = -2.5e-7
             torques = -0.0002
+            action_rate = -0.1
             dof_pos_limits = -10.0
+            energy = -2e-5
+            orientation = -2.5
+            joint_pos = -0.7
+            feet_air_time = 0.1
+            collision = -1.0
 
 class GO2RoughCfgPPO( LeggedRobotCfgPPO ):
     class algorithm( LeggedRobotCfgPPO.algorithm ):
         entropy_coef = 0.01
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''
-        experiment_name = 'rough_go2_45'
+        experiment_name = 'rough_go2_45x60_rewards'
 
   

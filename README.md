@@ -92,7 +92,7 @@ Play 会导出 Actor 网络，保存于 `logs/{experiment_name}/exported/policie
 - RNN 网络，导出为 `policy_lstm_1.pt`
 
 Go2 在导出策略的同时还会生成
-`logs/rough_go2_45/exported/params/deploy.yaml`。该文件记录实际训练使用的
+`logs/rough_go2_45x60_rewards/exported/params/deploy.yaml`。该文件记录实际训练使用的
 观测缩放、关节顺序、默认角度、PD 参数、动作缩放和控制周期，必须与策略文件配套使用。
   
 ### Play 效果
