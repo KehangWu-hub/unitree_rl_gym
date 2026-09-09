@@ -1,5 +1,4 @@
 from legged_gym.envs.base.legged_robot import LeggedRobot
-from legged_gym.envs.go2.rewards import energy, joint_position_penalty
 import torch
 
 
@@ -61,13 +60,3 @@ class Go2Robot(LeggedRobot):
         noise_vec[9 + 2 * self.num_actions : 9 + 3 * self.num_actions] = 0.0  # previous actions
 
         return noise_vec
-
-    def _reward_energy(self):
-        """Official Lab energy penalty translated to the tensor-based Gym API."""
-        return energy(self.dof_vel, self.torques)
-
-    def _reward_joint_pos(self):
-        """Penalize deviation from the default pose, with a stronger idle penalty."""
-        return joint_position_penalty(
-            self.dof_pos, self.default_dof_pos, self.commands, self.base_lin_vel
-        )

@@ -655,6 +655,12 @@ class LeggedRobot(BaseTask):
         # Penalize torques
         return torch.sum(torch.square(self.torques), dim=1)
 
+    def _reward_energy(self):
+        # Designed for the Go2 task from the official Isaac Lab energy penalty.
+        # Other robots can reuse it, but it is inactive unless their reward
+        # configuration provides a non-zero ``energy`` scale.
+        return torch.sum(torch.abs(self.dof_vel) * torch.abs(self.torques), dim=1)
+
     def _reward_dof_vel(self):
         # Penalize dof velocities
         return torch.sum(torch.square(self.dof_vel), dim=1)
@@ -721,6 +727,15 @@ class LeggedRobot(BaseTask):
     def _reward_stand_still(self):
         # Penalize motion at zero commands
         return torch.sum(torch.abs(self.dof_pos - self.default_dof_pos), dim=1) * (torch.norm(self.commands[:, :2], dim=1) < 0.1)
+
+    def _reward_joint_pos(self):
+        # Designed for the Go2 task from the official Isaac Lab joint-position
+        # penalty: strengthen the default-pose penalty fivefold while idle.
+        command_speed = torch.linalg.norm(self.commands[:, :3], dim=1)
+        body_speed = torch.linalg.norm(self.base_lin_vel[:, :2], dim=1)
+        deviation = torch.linalg.norm(self.dof_pos - self.default_dof_pos, dim=1)
+        moving = torch.logical_or(command_speed > 0.0, body_speed > 0.3)
+        return torch.where(moving, deviation, 5.0 * deviation)
 
     def _reward_feet_contact_forces(self):
         # penalize high contact forces
