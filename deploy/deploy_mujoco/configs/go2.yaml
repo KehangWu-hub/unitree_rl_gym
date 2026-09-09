@@ -6,8 +6,8 @@ simulation_duration: 30.0
 simulation_dt: 0.002
 command: [0.5, 0.0, 0.0]
 
-# Match the Isaac Gym asset options used during training. The upstream MJCF
-# intentionally includes passive motor losses that are absent from this Gym task.
+# 与训练时使用的Isaac Gym资产选项保持一致。上游MJCF有意包含了该Gym任务中不存在的
+# 电机被动损耗，因此在此覆盖相应参数。
 model_overrides:
   joint_damping: 0.0
   armature: 0.0

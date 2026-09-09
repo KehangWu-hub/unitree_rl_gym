@@ -3,13 +3,12 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 class GO2RoughCfg( LeggedRobotCfg ):
     class env( LeggedRobotCfg.env ):
         num_observations = 45
-        # The actor only sees signals available on the robot.  The critic keeps
-        # the simulator-only base linear velocity during training.
+        # Actor只接收真机可获取的信号；Critic在训练时保留仅仿真器可获取的机身线速度。
         num_privileged_obs = 60
 
     class init_state( LeggedRobotCfg.init_state ):
         pos = [0.0, 0.0, 0.42] # x,y,z [m]
-        default_joint_angles = { # = target angles [rad] when action = 0.0
+        default_joint_angles = { # 动作为0时的目标关节角，单位：弧度
             'FL_hip_joint': 0.1,   # [rad]
             'RL_hip_joint': 0.1,   # [rad]
             'FR_hip_joint': -0.1 ,  # [rad]
@@ -27,13 +26,13 @@ class GO2RoughCfg( LeggedRobotCfg ):
         }
 
     class control( LeggedRobotCfg.control ):
-        # PD Drive parameters:
+        # PD驱动参数：
         control_type = 'P'
         stiffness = {'joint': 20.}  # [N*m/rad]
         damping = {'joint': 0.5}     # [N*m*s/rad]
-        # action scale: target angle = actionScale * action + defaultAngle
+        # 动作缩放：目标角度 = 动作缩放系数 * 动作 + 默认角度
         action_scale = 0.25
-        # decimation: Number of control action updates @ sim DT per policy DT
+        # 降采样倍数：每个策略周期包含的仿真步数
         decimation = 4
 
     class asset( LeggedRobotCfg.asset ):
@@ -42,7 +41,7 @@ class GO2RoughCfg( LeggedRobotCfg ):
         foot_name = "foot"
         penalize_contacts_on = ["thigh", "calf"]
         terminate_after_contacts_on = ["base"]
-        self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
+        self_collisions = 1 # 位掩码过滤器：1表示禁用自碰撞，0表示启用
   
     class rewards( LeggedRobotCfg.rewards ):
         only_positive_rewards = False

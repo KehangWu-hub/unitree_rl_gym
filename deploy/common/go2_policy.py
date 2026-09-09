@@ -18,7 +18,7 @@ def load_deploy_config(path):
 
 
 def name_to_indices(source_names, target_names):
-    """Return indices that read target order from an array in source order."""
+    """返回索引，用于从源顺序数组中按目标顺序读取元素。"""
     if len(source_names) != len(set(source_names)):
         raise ValueError("Source joint names must be unique")
     missing = set(target_names) - set(source_names)
@@ -28,7 +28,7 @@ def name_to_indices(source_names, target_names):
 
 
 def projected_gravity(quaternion_wxyz):
-    """Project world gravity (0, 0, -1) into the body frame."""
+    """将世界坐标系重力方向(0, 0, -1)投影到机身坐标系。"""
     qw, qx, qy, qz = np.asarray(quaternion_wxyz, dtype=np.float32)
     return np.asarray(
         [
@@ -41,7 +41,7 @@ def projected_gravity(quaternion_wxyz):
 
 
 def build_observation(ang_vel, gravity, command, joint_pos, joint_vel, last_action, cfg):
-    """Build the exact 45-dimensional Go2 actor observation."""
+    """严格按照训练约定构造45维Go2 Actor观测。"""
     scales = {item["name"]: item["scale"] for item in cfg["observations"]}
     default_pos = np.asarray(cfg["actions"]["default_joint_pos"], dtype=np.float32)
     obs = np.concatenate(

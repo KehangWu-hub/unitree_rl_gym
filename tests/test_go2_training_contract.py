@@ -11,7 +11,7 @@ LEGGED_ROBOT_PATH = (
 
 
 def load_reward_method(name):
-    """Load one real base-class reward method without importing Isaac Gym."""
+    """在不导入Isaac Gym的情况下加载一个真实的基类奖励方法。"""
     tree = ast.parse(LEGGED_ROBOT_PATH.read_text())
     legged_robot = next(
         node

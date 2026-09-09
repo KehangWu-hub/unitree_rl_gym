@@ -2,24 +2,24 @@ import inspect
 
 class BaseConfig:
     def __init__(self) -> None:
-        """ Initializes all member classes recursively. Ignores all namse starting with '__' (buit-in methods)."""
+        """递归初始化所有成员类，忽略以“__”开头的名称（内置方法）。"""
         self.init_member_classes(self)
     
     @staticmethod
     def init_member_classes(obj):
-        # iterate over all attributes names
+        # 遍历所有属性名称
         for key in dir(obj):
-            # disregard builtin attributes
+            # 忽略内置属性
             # if key.startswith("__"):
             if key=="__class__":
                 continue
-            # get the corresponding attribute object
+            # 获取对应的属性对象
             var =  getattr(obj, key)
-            # check if it the attribute is a class
+            # 检查该属性是否为类
             if inspect.isclass(var):
-                # instantate the class
+                # 实例化该类
                 i_var = var()
-                # set the attribute to the instance instead of the type
+                # 将属性从类类型替换为对应实例
                 setattr(obj, key, i_var)
-                # recursively init members of the attribute
+                # 递归初始化该属性的成员
                 BaseConfig.init_member_classes(i_var)

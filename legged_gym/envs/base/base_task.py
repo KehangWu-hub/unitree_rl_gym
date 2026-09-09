@@ -5,7 +5,7 @@ from isaacgym import gymutil
 import numpy as np
 import torch
 
-# Base class for RL tasks
+# 强化学习任务基类
 class BaseTask():
 
     def __init__(self, cfg, sim_params, physics_engine, sim_device, headless):
@@ -17,13 +17,13 @@ class BaseTask():
         sim_device_type, self.sim_device_id = gymutil.parse_device_str(self.sim_device)
         self.headless = headless
 
-        # env device is GPU only if sim is on GPU and use_gpu_pipeline=True, otherwise returned tensors are copied to CPU by physX.
+        # 仅当仿真运行在GPU且use_gpu_pipeline=True时，环境设备才是GPU；否则PhysX会将返回张量复制到CPU。
         if sim_device_type=='cuda' and sim_params.use_gpu_pipeline:
             self.device = self.sim_device
         else:
             self.device = 'cpu'
 
-        # graphics device for rendering, -1 for no rendering
+        # 用于渲染的图形设备，-1表示不渲染
         self.graphics_device_id = self.sim_device_id
         if self.headless == True:
             self.graphics_device_id = -1
@@ -33,11 +33,11 @@ class BaseTask():
         self.num_privileged_obs = cfg.env.num_privileged_obs
         self.num_actions = cfg.env.num_actions
 
-        # optimization flags for pytorch JIT
+        # PyTorch JIT优化选项
         torch._C._jit_set_profiling_mode(False)
         torch._C._jit_set_profiling_executor(False)
 
-        # allocate buffers
+        # 分配缓冲区
         self.obs_buf = torch.zeros(self.num_envs, self.num_obs, device=self.device, dtype=torch.float)
         self.rew_buf = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
         self.reset_buf = torch.ones(self.num_envs, device=self.device, dtype=torch.long)
@@ -51,17 +51,17 @@ class BaseTask():
 
         self.extras = {}
 
-        # create envs, sim and viewer
+        # 创建环境、仿真器和查看器
         self.create_sim()
         self.gym.prepare_sim(self.sim)
 
-        # todo: read from config
+        # 待办：从配置中读取
         self.enable_viewer_sync = True
         self.viewer = None
 
-        # if running with a viewer, set up keyboard shortcuts and camera
+        # 使用查看器运行时，设置键盘快捷键和相机
         if self.headless == False:
-            # subscribe to keyboard shortcuts
+            # 订阅键盘快捷键
             self.viewer = self.gym.create_viewer(
                 self.sim, gymapi.CameraProperties())
             self.gym.subscribe_viewer_keyboard_event(
@@ -76,11 +76,11 @@ class BaseTask():
         return self.privileged_obs_buf
 
     def reset_idx(self, env_ids):
-        """Reset selected robots"""
+        """重置选中的机器人。"""
         raise NotImplementedError
 
     def reset(self):
-        """ Reset all robots"""
+        """重置所有机器人。"""
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
         obs, privileged_obs, _, _, _ = self.step(torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
         return obs, privileged_obs
@@ -90,22 +90,22 @@ class BaseTask():
 
     def render(self, sync_frame_time=True):
         if self.viewer:
-            # check for window closed
+            # 检查窗口是否已关闭
             if self.gym.query_viewer_has_closed(self.viewer):
                 sys.exit()
 
-            # check for keyboard events
+            # 检查键盘事件
             for evt in self.gym.query_viewer_action_events(self.viewer):
                 if evt.action == "QUIT" and evt.value > 0:
                     sys.exit()
                 elif evt.action == "toggle_viewer_sync" and evt.value > 0:
                     self.enable_viewer_sync = not self.enable_viewer_sync
 
-            # fetch results
+            # 获取仿真结果
             if self.device != 'cpu':
                 self.gym.fetch_results(self.sim, True)
 
-            # step graphics
+            # 更新图形渲染
             if self.enable_viewer_sync:
                 self.gym.step_graphics(self.sim)
                 self.gym.draw_viewer(self.viewer, self.sim, True)
