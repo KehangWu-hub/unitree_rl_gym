@@ -1,195 +1,259 @@
 <div align="center">
-  <h1 align="center">Unitree Go2 RL Gym</h1>
+  <h1>Unitree Go2 RL Gym</h1>
+  <p><strong>面向 Unitree Go2 的强化学习训练、MuJoCo Sim2Sim 与安全部署工程。</strong></p>
 </div>
 
-<p align="center">
-  <strong>用于 Unitree Go2 的强化学习训练、仿真与真机部署。</strong>
-</p>
+![Go2 策略在 MuJoCo 平地场景中运行](docs/images/go2_mujoco_success.png)
 
 > [!IMPORTANT]
-> 本项目基于 Unitree 官方的
+> 本项目基于 Unitree 官方
 > [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym)
-> 进行修改，用于 Unitree Go2 的强化学习训练、仿真验证和真机部署。
-> **本项目不是 Unitree 官方项目，与 Unitree Robotics 无隶属或背书关系。**
+> 开发，但不是 Unitree 官方项目，也不代表 Unitree Robotics 的官方实现或背书。
+> 本 README 只介绍本项目完成的 Go2 工作；仓库中保留的其他机器人上游代码不属于本项目成果。
 
-## 项目说明
+## 项目概览
 
-本仓库在上游 `unitree_rl_gym` 的基础上进行了针对 Unitree Go2 的适配，
-覆盖策略训练、效果预览、Sim2Sim 验证以及真机部署流程。除非另有说明，
-从上游项目保留的代码和文档仍遵循原有版权声明与许可证条款。
+本项目打通了以下 Go2 部署链路：
 
-<div align="center">
-
-| <div align="center"> Isaac Gym </div> | <div align="center">  Mujoco </div> |  <div align="center"> Physical </div> |
-|--- | --- | --- |
-| [<img src="https://oss-global-cdn.unitree.com/static/32f06dc9dfe4452dac300dda45e86b34.GIF" width="240px">](https://oss-global-cdn.unitree.com/static/5bbc5ab1d551407080ca9d58d7bec1c8.mp4) | [<img src="https://oss-global-cdn.unitree.com/static/244cd5c4f823495fbfb67ef08f56aa33.GIF" width="240px">](https://oss-global-cdn.unitree.com/static/5aa48535ffd641e2932c0ba45c8e7854.mp4) | [<img src="https://oss-global-cdn.unitree.com/static/78c61459d3ab41448cfdb31f6a537e8b.GIF" width="240px">](https://oss-global-cdn.unitree.com/static/0818dcf7a6874b92997354d628adcacd.mp4) |
-
-</div>
-
----
-
-## 📦 安装配置
-
-安装和配置步骤请参考 [setup.md](/doc/setup_zh.md)
-
-## 🔁 流程说明
-
-强化学习实现运动控制的基本流程为：
-
-`Train` → `Play` → `Sim2Sim` → `Sim2Real`
-
-- **Train**: 通过 Gym 仿真环境，让机器人与环境互动，找到最满足奖励设计的策略。通常不推荐实时查看效果，以免降低训练效率。
-- **Play**: 通过 Play 命令查看训练后的策略效果，确保策略符合预期。
-- **Sim2Sim**: 将 Gym 训练完成的策略部署到其他仿真器，避免策略小众于 Gym 特性。
-- **Sim2Real**: 将策略部署到实物机器人，实现运动控制。
-
-## 🛠️ 使用指南
-
-### 1. 训练
-
-运行以下命令进行训练：
-
-```bash
-python legged_gym/scripts/train.py --task=xxx
+```text
+Isaac Gym 训练
+  → Isaac Gym Play 与策略导出
+  → Python MuJoCo Sim2Sim
+  → Unitree SDK2 / DDS 官方 MuJoCo 闭环
+  → 实体 Go2 分级验收（待现场完成）
 ```
 
-#### ⚙️  参数说明
-- `--task`: 必选参数，值可选(go2, g1, h1, h1_2)
-- `--headless`: 默认启动图形界面，设为 true 时不渲染图形界面（效率更高）
-- `--resume`: 从日志中选择 checkpoint 继续训练
-- `--experiment_name`: 运行/加载的 experiment 名称
-- `--run_name`: 运行/加载的 run 名称
-- `--load_run`: 加载运行的名称，默认加载最后一次运行
-- `--checkpoint`: checkpoint 编号，默认加载最新一次文件
-- `--num_envs`: 并行训练的环境个数
-- `--seed`: 随机种子
-- `--max_iterations`: 训练的最大迭代次数
-- `--sim_device`: 仿真计算设备，指定 CPU 为 `--sim_device=cpu`
-- `--rl_device`: 强化学习计算设备，指定 CPU 为 `--rl_device=cpu`
+当前正式策略采用：
 
-**默认保存训练结果**：`logs/<experiment_name>/<date_time>_<run_name>/model_<iteration>.pt`
+- 45 维 Actor：机身角速度、投影重力、速度指令、关节位置、关节速度和上一帧动作；
+- 60 维 Critic：仅训练时额外使用机身线速度和关节力矩等特权信息；
+- 12 维动作：对应 Go2 的 12 个驱动关节；
+- 50 Hz 策略频率：控制周期为 0.02 秒；
+- PD 参数：Policy 阶段 `Kp=20`、`Kd=0.5`。
 
----
+Actor 只依赖真机可获得的信息。Critic 不会进入导出的 TorchScript，也不会用于 MuJoCo 或真机推理。
 
-### 2. Play
+## 已完成内容
 
-如果想要在 Gym 中查看训练效果，可以运行以下命令：
+- Go2 45/60 非对称 Actor-Critic 训练环境与官方关键奖励适配；
+- 1500 轮正式训练、Isaac Gym Play 和 checkpoint/TorchScript 一致性验证；
+- Actor 与 `deploy.yaml` 成套导出，固化观测、动作、PD 参数和关节映射；
+- Unitree 官方 Go2 MJCF 资产接入及专用 Python MuJoCo 运行器；
+- 平地六方向、长时运行、组合指令和外力扰动 Sim2Sim 验收；
+- Go2 真机侧四态 FSM：`Passive → FixStand → Policy / Damping`；
+- LowState、LowCmd、CRC、DDS、遥控器和策略/SDK 关节顺序转换；
+- 通信、姿态、关节、动作变化、目标角和估算力矩安全检查；
+- 官方 `unitree_mujoco + unitree_sdk2py + DDS` 前进与组合指令闭环；
+- 17 项 Go2 自动测试。
 
-```bash
-python legged_gym/scripts/play.py --task=xxx
+当前尚未完成实体 Go2 的吊架和落地验收，因此不能宣称已经完成实体真机部署。
+
+## 关键目录
+
+```text
+legged_gym/envs/go2/                 Go2 训练配置与45/60维观测
+legged_gym/scripts/train.py          Isaac Gym训练入口
+legged_gym/scripts/play.py           Play、Actor与部署契约导出
+legged_gym/utils/deploy.py           deploy.yaml导出
+deploy/common/go2_policy.py          MuJoCo与Real共用的观测/动作接口
+deploy/deploy_mujoco/deploy_go2.py   Go2专用Python MuJoCo运行器
+deploy/deploy_mujoco/configs/go2.yaml
+deploy/deploy_real/deploy_real_go2.py
+deploy/deploy_real/configs/go2.yaml
+deploy/pre_train/go2/motion.pt       冻结的正式TorchScript Actor
+resources/robots/go2/mjcf/           官方Go2 MJCF及场景资产
+tests/test_go2*.py                   Go2回归测试
 ```
 
-**说明**：
+## 环境准备
 
-- Play 启动参数与 Train 相同。
-- 默认加载实验文件夹上次运行的最后一个模型。
-- 可通过 `load_run` 和 `checkpoint` 指定其他模型。
+基础依赖与 Isaac Gym 安装方式见 [中文安装说明](doc/setup_zh.md)。本项目当前使用两个环境：
 
-#### 💾 导出网络
+- `LeggedGym`：Isaac Gym 训练与 Play；
+- `unitree-rl`：MuJoCo、自动测试及 Unitree SDK2/DDS 部署。
 
-Play 会导出 Actor 网络，保存于 `logs/{experiment_name}/exported/policies` 中：
-- 普通网络（MLP）导出为 `policy_1.pt`
-- RNN 网络，导出为 `policy_lstm_1.pt`
-
-Go2 在导出策略的同时还会生成
-`logs/rough_go2_45x60_rewards/exported/params/deploy.yaml`。该文件记录实际训练使用的
-观测缩放、关节顺序、默认角度、PD 参数、动作缩放和控制周期，必须与策略文件配套使用。
-  
-### Play 效果
-
-| Go2 | G1 | H1 | H1_2 |
-|--- | --- | --- | --- |
-| [![go2](https://oss-global-cdn.unitree.com/static/ba006789e0af4fe3867255f507032cd7.GIF)](https://oss-global-cdn.unitree.com/static/d2e8da875473457c8d5d69c3de58b24d.mp4) | [![g1](https://oss-global-cdn.unitree.com/static/32f06dc9dfe4452dac300dda45e86b34.GIF)](https://oss-global-cdn.unitree.com/static/5bbc5ab1d551407080ca9d58d7bec1c8.mp4) | [![h1](https://oss-global-cdn.unitree.com/static/fa04e73966934efa9838e9c389f48fa2.GIF)](https://oss-global-cdn.unitree.com/static/522128f4640c4f348296d2761a33bf98.mp4) |[![h1_2](https://oss-global-cdn.unitree.com/static/83ed59ca0dab4a51906aff1f93428650.GIF)](https://oss-global-cdn.unitree.com/static/15fa46984f2343cb83342fd39f5ab7b2.mp4)|
-
----
-
-### 3. Sim2Sim (Mujoco)
-
-支持在 Mujoco 仿真器中运行 Sim2Sim：
+进入项目目录：
 
 ```bash
-python deploy/deploy_mujoco/deploy_mujoco.py {config_name}
+cd /home/wkh/projects/unitree_rl_gym
 ```
 
-Go2 使用45维真机可观测策略和专用运行器：
+## 1. Isaac Gym 训练
+
+激活训练环境：
 
 ```bash
-python deploy/deploy_mujoco/deploy_go2.py
+source /home/wkh/anaconda3/etc/profile.d/conda.sh
+conda activate LeggedGym
 ```
 
-无窗口快速验证：
+正式训练前建议先运行小规模契约检查：
 
 ```bash
-python deploy/deploy_mujoco/deploy_go2.py --headless --no-realtime --duration 10
+python legged_gym/scripts/train.py \
+  --task=go2 --headless \
+  --num_envs=64 --max_iterations=2 \
+  --run_name=contract_check
 ```
 
-覆盖速度指令（前进速度、侧向速度、偏航角速度）：
+网络打印应显示 Actor 输入 45 维、Critic 输入 60 维，且训练过程没有 NaN、Inf 或维度错误。
+
+正式训练：
+
+```bash
+python legged_gym/scripts/train.py \
+  --task=go2 --headless \
+  --num_envs=4096 --max_iterations=1500 \
+  --run_name=go2_45x60_official_rewards
+```
+
+checkpoint 默认保存到：
+
+```text
+logs/rough_go2_45x60_rewards/<时间>_<run名称>/model_<迭代数>.pt
+```
+
+## 2. Play 与导出
+
+指定正式 run 和 checkpoint：
+
+```bash
+python legged_gym/scripts/play.py \
+  --task=go2 --headless \
+  --load_run=<实际run目录名> \
+  --checkpoint=1500
+```
+
+Play 会成套导出：
+
+```text
+logs/rough_go2_45x60_rewards/exported/policies/policy_1.pt
+logs/rough_go2_45x60_rewards/exported/params/deploy.yaml
+```
+
+`policy_1.pt` 与 `deploy.yaml` 必须配套使用，不能混用不同训练 run 的策略和参数。
+
+## 3. Go2 MuJoCo Sim2Sim
+
+激活部署环境：
+
+```bash
+source /home/wkh/anaconda3/etc/profile.d/conda.sh
+conda activate unitree-rl
+```
+
+打开 MuJoCo 窗口并发送前进指令：
 
 ```bash
 python deploy/deploy_mujoco/deploy_go2.py --command 0.5 0.0 0.0
 ```
 
-运行结束会输出是否跌倒、机身高度、最大倾角、最大力矩、位移和速度跟踪误差等JSON指标。
-
-#### 参数说明
-- `config_name`: 配置文件，默认查询路径为 `deploy/deploy_mujoco/configs/`
-
-#### 示例：运行 G1
+指令顺序为 `前进速度 侧向速度 偏航角速度`。例如：
 
 ```bash
-python deploy/deploy_mujoco/deploy_mujoco.py g1.yaml
+# 静止站立
+python deploy/deploy_mujoco/deploy_go2.py --command 0.0 0.0 0.0
+
+# 左移
+python deploy/deploy_mujoco/deploy_go2.py --command 0.0 0.3 0.0
+
+# 左转
+python deploy/deploy_mujoco/deploy_go2.py --command 0.0 0.0 0.5
+
+# 前进、左移并右转
+python deploy/deploy_mujoco/deploy_go2.py --command 0.5 0.2 -0.3
 ```
 
-#### ➡️  替换网络模型
-
-默认模型位于 `deploy/pre_train/{robot}/motion.pt`；自己训练模型保存于`logs/g1/exported/policies/policy_lstm_1.pt`，只需替换 yaml 配置文件中 `policy_path`。
-
-#### 运行效果
-
-| G1 | H1 | H1_2 |
-|--- | --- | --- |
-| [![mujoco_g1](https://oss-global-cdn.unitree.com/static/244cd5c4f823495fbfb67ef08f56aa33.GIF)](https://oss-global-cdn.unitree.com/static/5aa48535ffd641e2932c0ba45c8e7854.mp4)  |  [![mujoco_h1](https://oss-global-cdn.unitree.com/static/7ab4e8392e794e01b975efa205ef491e.GIF)](https://oss-global-cdn.unitree.com/static/8934052becd84d08bc8c18c95849cf32.mp4)  |  [![mujoco_h1_2](https://oss-global-cdn.unitree.com/static/2905e2fe9b3340159d749d5e0bc95cc4.GIF)](https://oss-global-cdn.unitree.com/static/ee7ee85bd6d249989a905c55c7a9d305.mp4) |
-
-
----
-
-### 4. Sim2Real (实物部署)
-
-实现实物部署前，确保机器人进入调试模式。详细步骤请参考 [实物部署指南](deploy/deploy_real/README.zh.md)：
+无窗口快速验收：
 
 ```bash
-python deploy/deploy_real/deploy_real.py {net_interface} {config_name}
+python deploy/deploy_mujoco/deploy_go2.py \
+  --headless --no-realtime --duration 10 \
+  --command 0.5 0.0 0.0
 ```
 
-#### 参数说明
-- `net_interface`: 连接机器人网卡名称，如 `enp3s0`
-- `config_name`: 配置文件，存在于 `deploy/deploy_real/configs/`，如 `g1.yaml`，`h1.yaml`，`h1_2.yaml`
+外力扰动测试：
 
-#### 运行效果
+```bash
+python deploy/deploy_mujoco/deploy_go2.py \
+  --headless --no-realtime --duration 10 \
+  --command 0.5 0.0 0.0 \
+  --push-at 5 --push-duration 0.2 --push-force 50 0 0
+```
 
-| G1 | H1 | H1_2 |
-|--- | --- | --- |
-| [![real_g1](https://oss-global-cdn.unitree.com/static/78c61459d3ab41448cfdb31f6a537e8b.GIF)](https://oss-global-cdn.unitree.com/static/0818dcf7a6874b92997354d628adcacd.mp4) | [![real_h1](https://oss-global-cdn.unitree.com/static/fa07b2fd2ad64bb08e6b624d39336245.GIF)](https://oss-global-cdn.unitree.com/static/ea0084038d384e3eaa73b961f33e6210.mp4) | [![real_h1_2](https://oss-global-cdn.unitree.com/static/a88915e3523546128a79520aa3e20979.GIF)](https://oss-global-cdn.unitree.com/static/12d041a7906e489fae79d55b091a63dd.mp4) |
+运行结束会输出 JSON 指标，包括跌倒状态、有限值检查、机身高度、最大倾角、最大力矩、位移和速度。
 
----
+## 4. 自动测试
 
-## 🎉  致谢
+```bash
+conda activate unitree-rl
+python -m unittest discover -s tests -p 'test_go2*.py'
+```
 
-本仓库开发离不开以下开源项目的支持与贡献，特此感谢：
+当前基线为 17 项 Go2 测试全部通过，覆盖训练契约、45 维策略接口、MJCF、关节映射、FSM、控制器和安全降级。
 
-- [legged\_gym](https://github.com/leggedrobotics/legged_gym): 构建训练与运行代码的基础。
-- [rsl\_rl](https://github.com/leggedrobotics/rsl_rl.git): 强化学习算法实现。
-- [mujoco](https://github.com/google-deepmind/mujoco.git): 提供强大仿真功能。
-- [unitree\_sdk2\_python](https://github.com/unitreerobotics/unitree_sdk2_python.git): 实物部署硬件通信接口。
+## 5. Unitree SDK2 / DDS 部署
 
+详细安全步骤见 [Go2 真机部署指南](deploy/deploy_real/README_GO2.zh.md)。实体机器人可能造成设备损坏或人身伤害，禁止跳过 DDS 仿真、只读连接或吊架验证。
 
----
+只检查 Real 配置和冻结模型，不初始化 DDS：
 
-## 🔖  许可证
+```bash
+python deploy/deploy_real/deploy_real_go2.py --check
+```
 
-本项目根据 [BSD 3-Clause License](./LICENSE) 授权：
-1. 必须保留原始版权声明。
-2. 禁止以项目名或组织名作举。
-3. 声明所有修改内容。
+官方 MuJoCo DDS 闭环使用本机回环网卡和非零 domain：
 
-详情请阅读完整 [LICENSE 文件](./LICENSE)。
+```bash
+python deploy/deploy_real/deploy_real_go2.py lo \
+  --domain-id 1 \
+  --simulation-auto \
+  --duration 12 \
+  --command 0.3 0.0 0.0
+```
+
+`--simulation-auto` 被限制为 `lo + 非零 domain`，不能用于实体机器人。
+
+实体 Go2 的第一步只能是只读连接：
+
+```bash
+python deploy/deploy_real/deploy_real_go2.py <有线网卡> --read-only
+```
+
+后续必须按以下顺序逐级验收：
+
+```text
+只读LowState
+→ 阻尼与急停
+→ 吊架FixStand
+→ 策略只推理、不下发
+→ 吊架限幅短时下发
+→ 落地站立与微速运动
+→ 组合指令、扰动和长时运行
+```
+
+任何阶段出现通信超时、姿态异常、关节撞限位、异常声响或安全降级，都应立即停止升级测试并检查 `logs/go2_real/*.jsonl`，不能通过放宽安全阈值掩盖问题。
+
+## 已知限制
+
+- 策略实现的是近似速度跟踪，不是精确速度伺服；侧移和转向仍存在幅值欠跟踪。
+- Isaac Gym 使用 URDF，MuJoCo 使用 MJCF，两者在接触、惯量、碰撞体和求解器上存在差异。
+- 当前稳定性结论来自 Isaac Gym、Python MuJoCo 和官方 DDS/MuJoCo；实体 Go2 现场结果仍待验证。
+- 修改观测顺序、缩放、关节映射、动作缩放、PD 参数或控制周期后，必须重新执行对应训练与部署验收。
+
+## 致谢与来源
+
+本项目建立在以下开源项目之上：
+
+- [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym)：项目上游与 Isaac Gym 训练框架；
+- [legged_gym](https://github.com/leggedrobotics/legged_gym)：腿式机器人训练环境；
+- [rsl_rl](https://github.com/leggedrobotics/rsl_rl)：PPO 实现；
+- [MuJoCo](https://github.com/google-deepmind/mujoco)：Sim2Sim 物理仿真；
+- [unitree_mujoco](https://github.com/unitreerobotics/unitree_mujoco)：Go2 MJCF 与官方 DDS 仿真链路；
+- [unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python)：Go2 DDS 通信接口。
+
+上游保留代码及资产继续遵循各自的版权与许可证条款。
+
+## 许可证
+
+本仓库按 [BSD 3-Clause License](LICENSE) 授权。使用和分发时请同时遵守仓库内第三方组件与资产的许可证要求。
