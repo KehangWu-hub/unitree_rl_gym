@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Unitree Go2 RL Gym</h1>
-  <p><strong>面向 Unitree Go2 的强化学习训练、MuJoCo Sim2Sim 与安全部署工程。</strong></p>
+  <p><strong>面向 Unitree Go2 的强化学习训练、MuJoCo 验证与真机部署验证。</strong></p>
 </div>
 
 ![Go2 策略在 MuJoCo 平地场景中运行](docs/images/go2_mujoco_success.png)
@@ -9,7 +9,7 @@
 > 本项目基于 Unitree 官方
 > [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym)
 > 开发，但不是 Unitree 官方项目，也不代表 Unitree Robotics 的官方实现或背书。
-> 本 README 只介绍本项目完成的 Go2 工作；仓库中保留的其他机器人上游代码不属于本项目成果。
+> 本 README 只介绍本项目的 Go2 工作。
 
 ## 项目概览
 
@@ -20,7 +20,8 @@ Isaac Gym 训练
   → Isaac Gym Play 与策略导出
   → Python MuJoCo Sim2Sim
   → Unitree SDK2 / DDS 官方 MuJoCo 闭环
-  → 实体 Go2 分级验收（待现场完成）
+  → 实体 Go2 有线只读连接与策略影子检查（已完成）
+  → 实体电机控制与运动验收（待完成）
 ```
 
 当前正式策略采用：
@@ -41,12 +42,13 @@ Actor 只依赖真机可获得的信息。Critic 不会进入导出的 TorchScri
 - Unitree 官方 Go2 MJCF 资产接入及专用 Python MuJoCo 运行器；
 - 平地六方向、长时运行、组合指令和外力扰动 Sim2Sim 验收；
 - Go2 真机侧四态 FSM：`Passive → FixStand → Policy / Damping`；
-- LowState、LowCmd、CRC、DDS、遥控器和策略/SDK 关节顺序转换；
+- LowState、LowCmd、CRC、DDS、手柄数据解析和策略/SDK 关节顺序转换；
 - 通信、姿态、关节、动作变化、目标角和估算力矩安全检查；
 - 官方 `unitree_mujoco + unitree_sdk2py + DDS` 前进与组合指令闭环；
-- 17 项 Go2 自动测试。
+- 实体 Go2 EDU 有线只读连接，以及 12 秒真机状态驱动的策略影子检查；
+- 20 项 Go2 自动测试。
 
-当前尚未完成实体 Go2 的吊架和落地验收，因此不能宣称已经完成实体真机部署。
+影子检查没有创建 LowCmd 发布器，也没有向电机发送指令。实体电机控制、停机路径和落地运动均未验收，因此不能宣称已经完成真机运动部署。
 
 ## 关键目录
 
@@ -190,11 +192,11 @@ conda activate unitree-rl
 python -m unittest discover -s tests -p 'test_go2*.py'
 ```
 
-当前基线为 17 项 Go2 测试全部通过，覆盖训练契约、45 维策略接口、MJCF、关节映射、FSM、控制器和安全降级。
+当前基线为 20 项 Go2 测试全部通过，覆盖训练契约、45 维策略接口、MJCF、关节映射、FSM、控制器、只读影子模式和安全降级。
 
 ## 5. Unitree SDK2 / DDS 部署
 
-详细安全步骤见 [Go2 真机部署指南](deploy/deploy_real/README_GO2.zh.md)。实体机器人可能造成设备损坏或人身伤害，禁止跳过 DDS 仿真、只读连接或吊架验证。
+详细步骤见 [Go2 真机部署指南](deploy/deploy_real/README_GO2.zh.md)。实体机器人可能造成设备损坏或人身伤害；当前没有手持遥控器，真机电机指令已被程序启动检查阻止。
 
 只检查 Real 配置和冻结模型，不初始化 DDS：
 
@@ -214,23 +216,34 @@ python deploy/deploy_real/deploy_real_go2.py lo \
 
 `--simulation-auto` 被限制为 `lo + 非零 domain`，不能用于实体机器人。
 
-实体 Go2 的第一步只能是只读连接：
+实体 Go2 已完成有线只读连接。复现只读检查：
 
 ```bash
 python deploy/deploy_real/deploy_real_go2.py <有线网卡> --read-only
 ```
 
-后续必须按以下顺序逐级验收：
+使用真实状态计算策略目标但不下发：
+
+```bash
+python deploy/deploy_real/deploy_real_go2.py <有线网卡> \
+  --read-only --shadow-policy --duration 12
+```
+
+2026 年 9 月 29 日的记录为 601 帧，其中 351 帧进入 `Policy`；数值均有限，没有软件安全故障，也没有创建 LowCmd 发布器。运行记录保存在本机 `logs/go2_real/`，不会随 Git 提交。
+
+后续分级验收顺序：
 
 ```text
 只读LowState
-→ 阻尼与急停
-→ 吊架FixStand
 → 策略只推理、不下发
-→ 吊架限幅短时下发
-→ 落地站立与微速运动
+→ 键盘速度输入和停机路径的仿真验证
+→ 受限电机控制与停机验证
+→ FixStand与落地站立
+→ 微速运动与停止
 → 组合指令、扰动和长时运行
 ```
+
+你的策略接收三维速度目标，再输出 12 个关节动作。当前真机程序只从手柄字段读取速度；电脑键盘尚未接入，手机 App 的虚拟摇杆是否可供底层程序读取也尚未核对。计划先接入键盘并验证超时给零速度及程序停机路径。零速度指令不等于独立急停。
 
 任何阶段出现通信超时、姿态异常、关节撞限位、异常声响或安全降级，都应立即停止升级测试并检查 `logs/go2_real/*.jsonl`，不能通过放宽安全阈值掩盖问题。
 
@@ -238,7 +251,7 @@ python deploy/deploy_real/deploy_real_go2.py <有线网卡> --read-only
 
 - 策略实现的是近似速度跟踪，不是精确速度伺服；侧移和转向仍存在幅值欠跟踪。
 - Isaac Gym 使用 URDF，MuJoCo 使用 MJCF，两者在接触、惯量、碰撞体和求解器上存在差异。
-- 当前稳定性结论来自 Isaac Gym、Python MuJoCo 和官方 DDS/MuJoCo；实体 Go2 现场结果仍待验证。
+- 当前运动稳定性结论来自 Isaac Gym、Python MuJoCo 和官方 DDS/MuJoCo；实体 Go2 仅完成只读状态和策略计算，运动效果仍待验证。
 - 修改观测顺序、缩放、关节映射、动作缩放、PD 参数或控制周期后，必须重新执行对应训练与部署验收。
 
 ## 致谢与来源

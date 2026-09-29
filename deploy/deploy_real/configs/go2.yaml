@@ -1,0 +1,93 @@
+robot: go2
+format_version: 1
+
+# 已通过MuJoCo与官方DDS闭环验收的冻结模型。
+policy_path: "{LEGGED_GYM_ROOT_DIR}/deploy/pre_train/go2/motion.pt"
+step_dt: 0.02
+
+policy:
+  num_observations: 45
+  num_actions: 12
+  joint_names:
+    - FL_hip_joint
+    - FL_thigh_joint
+    - FL_calf_joint
+    - FR_hip_joint
+    - FR_thigh_joint
+    - FR_calf_joint
+    - RL_hip_joint
+    - RL_thigh_joint
+    - RL_calf_joint
+    - RR_hip_joint
+    - RR_thigh_joint
+    - RR_calf_joint
+  sdk_joint_names:
+    - FR_hip_joint
+    - FR_thigh_joint
+    - FR_calf_joint
+    - FL_hip_joint
+    - FL_thigh_joint
+    - FL_calf_joint
+    - RR_hip_joint
+    - RR_thigh_joint
+    - RR_calf_joint
+    - RL_hip_joint
+    - RL_thigh_joint
+    - RL_calf_joint
+  policy_to_sdk: [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8]
+
+observations:
+  - {name: base_ang_vel, size: 3, scale: 0.25}
+  - {name: projected_gravity, size: 3, scale: 1.0}
+  - {name: velocity_commands, size: 3, scale: [2.0, 2.0, 0.25]}
+  - {name: joint_pos_rel, size: 12, scale: 1.0}
+  - {name: joint_vel, size: 12, scale: 0.05}
+  - {name: last_action, size: 12, scale: 1.0}
+
+actions:
+  type: joint_position
+  scale: 0.25
+  clip: 100.0
+  default_joint_pos: [0.1, 0.8, -1.5, -0.1, 0.8, -1.5, 0.1, 1.0, -1.5, -0.1, 1.0, -1.5]
+
+control:
+  stiffness: [20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0]
+  damping: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+  torque_limits: [23.7, 23.7, 35.55, 23.7, 23.7, 35.55, 23.7, 23.7, 35.55, 23.7, 23.7, 35.55]
+
+dds:
+  domain_id: 0
+  lowcmd_topic: "rt/lowcmd"
+  lowstate_topic: "rt/lowstate"
+  subscriber_queue: 10
+
+# 遥控器满行程对应的初始保守速度上限[x, y, yaw]。
+command_limits: [0.5, 0.3, 0.5]
+
+fsm:
+  stand_duration: 5.0
+  # 仅用于从趴卧姿态受控站起；Policy仍使用deploy.yaml中的训练增益20/0.5。
+  stand_kp: [40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0]
+  stand_kd: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  damping_duration: 1.0
+  damping_kd: 3.0
+
+safety:
+  state_timeout: 0.1
+  max_loop_dt: 0.05
+  max_roll: 0.8
+  max_pitch: 0.8
+  max_joint_velocity: 25.0
+  max_action: 4.0
+  max_action_delta: 1.0
+  torque_limit_ratio: 0.8
+  # 只用于读取状态，容纳接触求解造成的微小越界；目标关节角仍严格使用下方限位。
+  state_joint_margin: 0.02
+  # 顺序与策略关节顺序一致：FL、FR、RL、RR，每条腿为hip、thigh、calf。
+  joint_lower: [-1.0472, -0.5236, -2.7227, -1.0472, -0.5236, -2.7227, -1.0472, -0.5236, -2.7227, -1.0472, -0.5236, -2.7227]
+  joint_upper: [ 1.0472,  4.5379, -0.83776, 1.0472,  4.5379, -0.83776, 1.0472,  4.5379, -0.83776, 1.0472,  4.5379, -0.83776]
+
+recording:
+  enabled: true
+  directory: "{LEGGED_GYM_ROOT_DIR}/logs/go2_real"
+  flush_interval: 50
