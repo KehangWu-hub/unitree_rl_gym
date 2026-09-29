@@ -39,7 +39,7 @@ class KeyboardVelocity:
         self.expires_at = 0.0
 
     def feed(self, key, now):
-        if key == "x":
+        if key in ("x", " "):
             self.command.fill(0.0)
             self.expires_at = 0.0
         elif key in self._KEYS:
@@ -594,22 +594,24 @@ def run(args):
     try:
         if keyboard:
             keyboard.start()
-            print("键盘：W/S前后，A/D左右，Q/E转向，X归零，空格停止；按键超过0.25秒未续发则速度归零。")
+            print("键盘：W/S前后，A/D左右，Q/E转向，X或空格停止行走，Z退出并进入阻尼；输入超时0.25秒归零。")
         while not stop:
-            now = time.monotonic()
+            input_now = time.monotonic()
             if keyboard:
                 for key in keyboard.poll():
-                    if key == " ":
-                        controller.emergency_stop(now, "键盘停止")
+                    if key == "z":
+                        controller.emergency_stop(input_now, "键盘请求阻尼退出")
                         stop = True
                     else:
-                        keyboard_velocity.feed(key, now)
+                        keyboard_velocity.feed(key, input_now)
                 if stop:
                     break
             state = transport.snapshot()
             if state is None:
                 time.sleep(0.001)
                 continue
+            # DDS回调可能在复制状态时更新它；现在取时间，避免误判“未来状态”。
+            now = time.monotonic()
             if args.simulation_auto or args.shadow_policy:
                 controller.set_velocity_command(
                     keyboard_velocity.sample(now) if keyboard else ([0.0, 0.0, 0.0] if args.shadow_policy else args.command)

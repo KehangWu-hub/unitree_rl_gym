@@ -76,6 +76,9 @@ class Go2RealContractTest(unittest.TestCase):
         np.testing.assert_allclose(keyboard.sample(2.1), [0, 0.3, 0])
         keyboard.feed("x", 2.11)
         np.testing.assert_allclose(keyboard.sample(2.12), [0, 0, 0])
+        keyboard.feed("w", 3.0)
+        keyboard.feed(" ", 3.1)
+        np.testing.assert_allclose(keyboard.sample(3.11), [0, 0, 0])
 
     def test_keyboard_is_limited_to_read_only_shadow_or_loopback_simulation(self):
         for argv in (["go2", "eno1", "--keyboard"], ["go2", "eno1", "--read-only", "--keyboard"]):
