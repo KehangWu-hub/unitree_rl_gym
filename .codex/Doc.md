@@ -10,7 +10,7 @@ Isaac Gym 训练 → Isaac Gym Play/导出 → MuJoCo Sim2Sim
 `rough_go2_45x60_rewards`。Actor只使用真机可获得的信息；Critic只在训练时额外使用
 仿真器特权信息。MuJoCo和真机只读策略影子检查使用导出的45维Actor；真机尚未下发电机指令。
 
-截至2026-09-29，已完成实体Go2 EDU有线只读连接和12秒实时策略影子检查，尚未验收真机电机控制。当前使用电脑键盘和宇树手机App；键盘速度输入现限定在只读影子检查与DDS仿真中使用，App数据来源仍待核对。
+截至2026-09-29，已完成实体Go2 EDU有线只读连接和12秒实时策略影子检查，尚未验收真机电机控制。键盘速度输入限定在只读影子检查与DDS仿真中使用，App虚拟摇杆的数据来源仍待核对。
 
 ## 一、先理解整体数据流
 
@@ -892,9 +892,9 @@ python deploy/deploy_real/deploy_real_go2.py eno1 --read-only
 
 这次仅确认DDS收到LowState和12关节数据；尚未独立核对IMU方向、关节符号、上层控制输入来源与状态更新频率。
 只读模式不创建LowCmd发布器。进入任何实体电机控制测试前，仍需验证控制输入、独立停机方式、无其他LowCmd发布者，
-并按官方流程处理高层运动服务 `sport_mode`。悬空支撑可降低首次测试风险；用户没有吊架，地面测试需要另行设计受限控制并承担跌倒风险。不能直接跳到Policy。
+并按官方流程处理高层运动服务 `sport_mode`。悬空支撑可降低首次测试风险；若无支撑设备，地面测试需要另行设计受限控制并考虑跌倒风险。不能直接跳到Policy。
 
-2026-09-29，用户确认使用电脑键盘和宇树手机App。真机网卡上不带`--read-only`的运行现被启动前保护阻止，避免停机方式未验收时误发LowCmd；手机App可用于原厂运动控制，但尚未接入本策略程序。新加`--shadow-policy`后，在已连接的`eno1`上运行：
+2026-09-29，真机网卡上不带`--read-only`的运行被启动前保护阻止，避免停机方式未验收时误发LowCmd；手机App可用于原厂运动控制，但尚未接入本策略程序。加入`--shadow-policy`后，在已连接的`eno1`上运行：
 
 ```bash
 python deploy/deploy_real/deploy_real_go2.py eno1 --read-only --shadow-policy --duration 12
