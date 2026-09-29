@@ -61,7 +61,7 @@ dds:
   lowstate_topic: "rt/lowstate"
   subscriber_queue: 10
 
-# 遥控器满行程对应的初始保守速度上限[x, y, yaw]。
+# 键盘速度输入使用的初始保守速度上限[x, y, yaw]。
 command_limits: [0.5, 0.3, 0.5]
 
 fsm:

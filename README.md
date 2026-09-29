@@ -42,11 +42,11 @@ Actor 只依赖真机可获得的信息。Critic 不会进入导出的 TorchScri
 - Unitree 官方 Go2 MJCF 资产接入及专用 Python MuJoCo 运行器；
 - 平地六方向、长时运行、组合指令和外力扰动 Sim2Sim 验收；
 - Go2 真机侧四态 FSM：`Passive → FixStand → Policy / Damping`；
-- LowState、LowCmd、CRC、DDS、手柄数据解析和策略/SDK 关节顺序转换；
+- LowState、LowCmd、CRC、DDS、键盘速度输入和策略/SDK 关节顺序转换；
 - 通信、姿态、关节、动作变化、目标角和估算力矩安全检查；
 - 官方 `unitree_mujoco + unitree_sdk2py + DDS` 前进与组合指令闭环；
 - 实体 Go2 EDU 有线只读连接，以及 12 秒真机状态驱动的策略影子检查；
-- 22 项 Go2 自动测试。
+- 23 项 Go2 自动测试。
 
 影子检查没有创建 LowCmd 发布器，也没有向电机发送指令。实体电机控制、停机路径和落地运动均未验收，因此不能宣称已经完成真机运动部署。
 
@@ -192,11 +192,11 @@ conda activate unitree-rl
 python -m unittest discover -s tests -p 'test_go2*.py'
 ```
 
-当前基线为 22 项 Go2 测试全部通过，覆盖训练契约、45 维策略接口、MJCF、关节映射、FSM、控制器、只读影子模式、键盘输入超时和安全降级。
+当前基线为 23 项 Go2 测试全部通过，覆盖训练契约、45 维策略接口、MJCF、关节映射、FSM、控制器、只读影子模式、键盘输入超时和安全降级。
 
 ## 5. Unitree SDK2 / DDS 部署
 
-详细步骤见 [Go2 真机部署指南](deploy/deploy_real/README_GO2.zh.md)。实体机器人可能造成设备损坏或人身伤害；当前没有手持遥控器，真机电机指令已被程序启动检查阻止。
+详细步骤见 [Go2 真机部署指南](deploy/deploy_real/README_GO2.zh.md)。实体机器人可能造成设备损坏或人身伤害；真机电机指令目前已被程序启动检查阻止。
 
 只检查 Real 配置和冻结模型，不初始化 DDS：
 

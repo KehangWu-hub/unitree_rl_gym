@@ -87,6 +87,11 @@ class Go2RealContractTest(unittest.TestCase):
             with self.subTest(argv=argv), patch("sys.argv", argv):
                 self.assertTrue(parse_args().keyboard)
 
+    def test_old_manual_mode_is_not_available(self):
+        with patch("sys.argv", ["go2", "lo", "--domain-id", "1"]), redirect_stderr(StringIO()):
+            with self.assertRaises(SystemExit):
+                parse_args()
+
 
 if __name__ == "__main__":
     unittest.main()
