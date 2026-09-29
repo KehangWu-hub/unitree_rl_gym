@@ -3,9 +3,13 @@
 import argparse
 import json
 import os
+import select
 import signal
+import sys
+import termios
 import threading
 import time
+import tty
 from dataclasses import dataclass
 from enum import Enum
 
@@ -19,6 +23,62 @@ from deploy.deploy_real.common.remote_controller import KeyMap, RemoteController
 
 
 GO2_SERVO_MODE = 0x01  # Unitree Go2 low-level examples use PMSM/FOC mode 0x01.
+
+
+class KeyboardVelocity:
+    """终端按键产生短时速度目标；停止收到按键后自动归零。"""
+
+    _KEYS = {"w": (0, 1), "s": (0, -1), "a": (1, 1), "d": (1, -1),
+             "q": (2, 1), "e": (2, -1)}
+
+    def __init__(self, limits, timeout=0.25):
+        self.limits = _array(limits, "command_limits", size=3)
+        if np.any(self.limits <= 0) or not np.isfinite(timeout) or timeout <= 0:
+            raise ValueError("键盘速度上限与超时时间必须为正有限数")
+        self.timeout = float(timeout)
+        self.command = np.zeros(3, dtype=np.float32)
+        self.expires_at = 0.0
+
+    def feed(self, key, now):
+        if key == "x":
+            self.command.fill(0.0)
+            self.expires_at = 0.0
+        elif key in self._KEYS:
+            axis, direction = self._KEYS[key]
+            self.command.fill(0.0)
+            self.command[axis] = direction * self.limits[axis]
+            self.expires_at = float(now) + self.timeout
+
+    def sample(self, now):
+        if now >= self.expires_at:
+            self.command.fill(0.0)
+        return self.command.copy()
+
+
+class TerminalKeys:
+    """只从当前前台终端读取按键，并在退出时恢复终端设置。"""
+
+    def __init__(self):
+        self.fd = sys.stdin.fileno()
+        self.saved = None
+
+    def start(self):
+        self.saved = termios.tcgetattr(self.fd)
+        tty.setcbreak(self.fd)
+
+    def poll(self):
+        pressed = []
+        while select.select([self.fd], [], [], 0)[0]:
+            data = os.read(self.fd, 32)
+            if not data:
+                break
+            pressed.extend(data.decode("ascii", errors="ignore").lower())
+        return pressed
+
+    def close(self):
+        if self.saved is not None:
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+            self.saved = None
 
 
 def _array(values, name, size=12):
@@ -502,6 +562,8 @@ def _handle_remote(controller, now, state, pressed, buttons):
 def run(args):
     if not args.check and args.network != "lo" and not args.read_only:
         raise RuntimeError("当前真机控制依赖手持遥控器；未提供经验证的键盘控制和独立急停，仅允许--read-only")
+    if args.keyboard and not sys.stdin.isatty():
+        raise RuntimeError("--keyboard需要前台交互式终端")
     config = Go2RealConfig.load(os.path.abspath(args.config), LEGGED_GYM_ROOT_DIR)
     controller = Go2Controller(config)
     controller.validate_policy()
@@ -517,6 +579,8 @@ def run(args):
     ChannelFactoryInitialize(domain_id, args.network)
     transport = Go2DDSTransport(config, publish=not args.read_only)
     recorder = Go2Recorder(config.data["recording"], LEGGED_GYM_ROOT_DIR)
+    keyboard = TerminalKeys() if args.keyboard else None
+    keyboard_velocity = KeyboardVelocity(config.data["command_limits"]) if args.keyboard else None
     stop = False
 
     def request_stop(_signum=None, _frame=None):
@@ -537,7 +601,7 @@ def run(args):
     if args.read_only:
         print("当前为只读模式，不创建LowCmd发布器。")
         if args.shadow_policy:
-            print("自动计算零速度策略目标；无需操作遥控器。")
+            print("自动计算策略目标；无需操作遥控器。" if args.keyboard else "自动计算零速度策略目标；无需操作遥控器。")
     else:
         print("L2+A站立，完成后Start进入策略；L2+B或Select急停。")
     next_step = run_started_at = time.monotonic()
@@ -548,14 +612,28 @@ def run(args):
         controller.request_fix_stand(next_step, state)
         print("只读策略影子检查：开始虚拟FixStand。" if args.shadow_policy else "DDS仿真自动验收：开始FixStand。")
     try:
+        if keyboard:
+            keyboard.start()
+            print("键盘：W/S前后，A/D左右，Q/E转向，X归零，空格停止；按键超过0.25秒未续发则速度归零。")
         while not stop:
             now = time.monotonic()
+            if keyboard:
+                for key in keyboard.poll():
+                    if key == " ":
+                        controller.emergency_stop(now, "键盘停止")
+                        stop = True
+                    else:
+                        keyboard_velocity.feed(key, now)
+                if stop:
+                    break
             state, axes, pressed, buttons = transport.snapshot()
             if state is None:
                 time.sleep(0.001)
                 continue
             if args.simulation_auto or args.shadow_policy:
-                controller.set_velocity_command([0.0, 0.0, 0.0] if args.shadow_policy else args.command)
+                controller.set_velocity_command(
+                    keyboard_velocity.sample(now) if keyboard else ([0.0, 0.0, 0.0] if args.shadow_policy else args.command)
+                )
                 if not auto_policy_attempted and now - run_started_at >= float(config.data["fsm"]["stand_duration"]):
                     controller.step(now, state)
                     entered = controller.request_policy(now)
@@ -577,6 +655,8 @@ def run(args):
             next_step += config.control_dt
             time.sleep(max(0.0, next_step - time.monotonic()))
     finally:
+        if keyboard:
+            keyboard.close()
         if not args.read_only:
             controller.emergency_stop(time.monotonic(), "程序退出")
             count = max(1, int(config.data["fsm"]["damping_duration"] / config.control_dt))
@@ -597,8 +677,9 @@ def parse_args():
     parser.add_argument("--connect-timeout", type=float, default=5.0)
     parser.add_argument("--check", action="store_true", help="只检查Real配置与模型，不初始化DDS")
     parser.add_argument("--read-only", action="store_true", help="只接收LowState，不创建LowCmd发布器")
-    parser.add_argument("--shadow-policy", action="store_true", help="仅配合--read-only，自动计算零速度策略目标，不使用遥控按键")
+    parser.add_argument("--shadow-policy", action="store_true", help="仅配合--read-only，默认计算零速度策略目标，不使用遥控按键")
     parser.add_argument("--simulation-auto", action="store_true", help="仅用于lo与非0 domain的DDS仿真")
+    parser.add_argument("--keyboard", action="store_true", help="仅用于只读影子检查或DDS仿真；按键超时归零")
     parser.add_argument("--duration", type=float, default=10.0, help="自动仿真或只读影子检查的总时长")
     parser.add_argument("--command", type=float, nargs=3, default=[0.3, 0.0, 0.0], metavar=("VX", "VY", "YAW"))
     args = parser.parse_args()
@@ -606,6 +687,8 @@ def parse_args():
         parser.error("非--check模式必须提供network")
     if args.shadow_policy and (not args.read_only or args.simulation_auto or args.check):
         parser.error("--shadow-policy必须配合--read-only，且不能与--check或--simulation-auto同时使用")
+    if args.keyboard and not (args.shadow_policy or args.simulation_auto):
+        parser.error("--keyboard仅允许配合--shadow-policy或--simulation-auto")
     if not args.check and args.network != "lo" and not args.read_only:
         parser.error("当前真机控制依赖手持遥控器；未提供经验证的键盘控制和独立急停，仅允许--read-only")
     return args

@@ -7,7 +7,7 @@ from io import StringIO
 
 import numpy as np
 
-from deploy.deploy_real.deploy_real_go2 import Go2Command, Go2DDSTransport, Go2Mode, Go2RealConfig, parse_args, run
+from deploy.deploy_real.deploy_real_go2 import Go2Command, Go2DDSTransport, Go2Mode, Go2RealConfig, KeyboardVelocity, parse_args, run
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -66,6 +66,26 @@ class Go2RealContractTest(unittest.TestCase):
                 parse_args()
         with self.assertRaisesRegex(RuntimeError, "仅允许--read-only"):
             run(SimpleNamespace(check=False, network="eno1", read_only=False))
+
+    def test_keyboard_velocity_expires_and_zero_key_stops_immediately(self):
+        keyboard = KeyboardVelocity([0.5, 0.3, 0.5], timeout=0.25)
+        keyboard.feed("w", 1.0)
+        np.testing.assert_allclose(keyboard.sample(1.1), [0.5, 0, 0])
+        np.testing.assert_allclose(keyboard.sample(1.25), [0, 0, 0])
+        keyboard.feed("a", 2.0)
+        np.testing.assert_allclose(keyboard.sample(2.1), [0, 0.3, 0])
+        keyboard.feed("x", 2.11)
+        np.testing.assert_allclose(keyboard.sample(2.12), [0, 0, 0])
+
+    def test_keyboard_is_limited_to_read_only_shadow_or_loopback_simulation(self):
+        for argv in (["go2", "eno1", "--keyboard"], ["go2", "eno1", "--read-only", "--keyboard"]):
+            with self.subTest(argv=argv), patch("sys.argv", argv), redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit):
+                    parse_args()
+        for argv in (["go2", "eno1", "--read-only", "--shadow-policy", "--keyboard"],
+                     ["go2", "lo", "--domain-id", "1", "--simulation-auto", "--keyboard"]):
+            with self.subTest(argv=argv), patch("sys.argv", argv):
+                self.assertTrue(parse_args().keyboard)
 
 
 if __name__ == "__main__":

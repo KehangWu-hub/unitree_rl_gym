@@ -10,7 +10,7 @@ Isaac Gym 训练 → Isaac Gym Play/导出 → MuJoCo Sim2Sim
 `rough_go2_45x60_rewards`。Actor只使用真机可获得的信息；Critic只在训练时额外使用
 仿真器特权信息。MuJoCo和真机只读策略影子检查使用导出的45维Actor；真机尚未下发电机指令。
 
-截至2026-09-29，已完成实体Go2 EDU有线只读连接和12秒实时策略影子检查，尚未验收真机电机控制。当前使用者只有电脑键盘和宇树手机App，没有手持遥控器；现有真机程序仍只解析手柄字段，键盘接入与App数据来源核对是后续工作。
+截至2026-09-29，已完成实体Go2 EDU有线只读连接和12秒实时策略影子检查，尚未验收真机电机控制。当前使用者只有电脑键盘和宇树手机App，没有手持遥控器；真机程序的手柄路径仍在，键盘速度输入现限定在只读影子检查与DDS仿真中使用，App数据来源仍待核对。
 
 ## 一、先理解整体数据流
 
@@ -402,7 +402,7 @@ conda activate unitree-rl
 python -m unittest discover -s tests
 ```
 
-当前Go2相关测试应为20项全部通过。系统默认Python可能没有安装MuJoCo，因此测试应在 `unitree-rl`
+当前Go2相关测试应为22项全部通过。系统默认Python可能没有安装MuJoCo，因此测试应在 `unitree-rl`
 环境运行。
 
 ## 八、当前正式产物与注意事项
@@ -845,7 +845,7 @@ python deploy/deploy_real/deploy_real_go2.py --check
 python -m unittest discover -s tests -p 'test_go2*.py'
 ```
 
-当前应为20项全部通过。
+当前应为22项全部通过。
 
 ### 4. 官方DDS/MuJoCo闭环
 
@@ -950,7 +950,7 @@ python deploy/deploy_real/deploy_real_go2.py eno1 --read-only --shadow-policy --
 - Go2 Real程序、Real配置、四态FSM和安全控制器；
 - Unitree SDK2、DDS、LowState、LowCmd与CRC接入；
 - 官方 `unitree_mujoco` 前进和组合指令闭环；
-- 20项Go2自动测试；
+- 22项Go2自动测试；
 - Go2专用LowCmd电机模式已按宇树Go2低层示例改为`0x01`，离线契约测试覆盖初始化和发送；
 - 正式模型冻结到 `deploy/pre_train/go2/motion.pt`；
 - 实体Go2 EDU有线网络配置及只读LowState连接，未下发电机命令。
@@ -959,7 +959,7 @@ python deploy/deploy_real/deploy_real_go2.py eno1 --read-only --shadow-policy --
 当前尚未完成：
 
 - 实体IMU、关节方向、App虚拟摇杆数据来源与数据更新频率的逐项核对；
-- 键盘速度指令接入、输入超时给零速度和停机路径的仿真验证；
+- 键盘速度输入在DDS仿真的完整交互验收，以及独立停机路径验证；
 - 实体阻尼、受限电机控制与FixStand验收；
 - 实体策略下发；
 - 落地运动与长时验收。
@@ -970,6 +970,8 @@ python deploy/deploy_real/deploy_real_go2.py eno1 --read-only --shadow-policy --
 
 ### 2026-09-29 上层指令接口决策
 
-本项目的45维Actor观测中包含三维速度指令，即前进、横移和偏航角速度。手柄、键盘和App可以在概念上提供相同的目标，但现有`Go2DDSTransport.snapshot()`只解析`LowState.wireless_remote`，`run()`据此调用`Go2Controller.set_velocity_command()`。手机App能控制宇树原厂运动功能，不代表它的虚拟摇杆已进入该字段或已接入当前程序；实体低层控制还需要按官方流程处理原厂运动服务。
+本项目的45维Actor观测中包含三维速度指令，即前进、横移和偏航角速度。手柄、键盘和App可以在概念上提供相同的目标。手柄路径由`Go2DDSTransport.snapshot()`解析`LowState.wireless_remote`；键盘路径直接调用`Go2Controller.set_velocity_command()`。手机App能控制宇树原厂运动功能，不代表它的虚拟摇杆已进入该字段或已接入当前程序；实体低层控制还需要按官方流程处理原厂运动服务。
 
-后续优先实现键盘速度输入，保持手柄输入逻辑为可选路径，并在DDS仿真中验证松键归零、输入失联归零和程序退出后的停机行为。App方案先做只读数据核对，再判断是否能提供同样的速度目标。零速度是停止行走指令，不能代替已验证的独立停机措施。当前真机网卡上的主动控制启动保护继续保留，直至对应输入和停机验收完成。
+现已加入`--keyboard`，仅能与`--simulation-auto`或`--read-only --shadow-policy`配合使用；`W/S`、`A/D`、`Q/E`分别给出前后、侧向、转向速度，`X`归零，空格请求结束并在仿真中进入阻尼。若0.25秒未收到有效方向按键，速度目标归零。终端不提供可靠的松键事件，连续按住依赖系统按键重复，必须在DDS仿真中实际验证操控手感和程序退出后的阻尼行为。App方案先做只读数据核对，再判断是否能提供同样的速度目标。零速度是停止行走指令，不能代替已验证的独立停机措施。当前真机网卡上的主动控制启动保护继续保留，直至对应输入和停机验收完成。
+
+自动测试现为22项全部通过。使用宇树官方`unitree_mujoco` Python桥接类和静态Go2 MJCF状态，在本机`lo`、DDS domain 1上做了键盘输入联调。`logs/go2_real/go2_real_20260929_153556.jsonl`记录316帧，其中`fix_stand`250帧、`policy`66帧；`W`对应10帧`[0.5,0,0]`，`A`对应13帧`[0,0.3,0]`，其余293帧零速度，安全故障为空。按空格后程序以返回码0退出。这验证了键盘到DDS控制循环、策略观测与日志的接线；本次桥接固定了机器人关节状态，没有验证物理仿真中的行走、接触稳定性或真实电机停机。
