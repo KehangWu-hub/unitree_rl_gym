@@ -10,7 +10,7 @@ Isaac Gym 训练 → Isaac Gym Play/导出 → MuJoCo Sim2Sim
 `rough_go2_45x60_rewards`。Actor只使用真机可获得的信息；Critic只在训练时额外使用
 仿真器特权信息。MuJoCo和真机只读策略影子检查使用导出的45维Actor；真机尚未下发电机指令。
 
-截至2026-09-29，已完成实体Go2 EDU有线只读连接和12秒实时策略影子检查，尚未验收真机电机控制。键盘速度输入限定在只读影子检查与DDS仿真中使用，App虚拟摇杆的数据来源仍待核对。
+截至2026-09-30，已完成实体Go2 EDU有线只读连接和12秒实时策略影子检查，以及独立软件看门狗和受限单关节测试的六种动态DDS/MuJoCo仿真验证。尚未验收真机电机控制和停机。键盘速度输入限定在只读影子检查与DDS仿真中使用，App虚拟摇杆的数据来源仍待核对。
 
 ## 一、先理解整体数据流
 
@@ -402,7 +402,7 @@ conda activate unitree-rl
 python -m unittest discover -s tests
 ```
 
-当前Go2相关测试应为23项全部通过。系统默认Python可能没有安装MuJoCo，因此测试应在 `unitree-rl`
+当前Go2相关离线测试为27项通过，DDS集成测试默认跳过。系统默认Python可能没有安装MuJoCo，因此测试应在 `unitree-rl`
 环境运行。
 
 ## 八、当前正式产物与注意事项
@@ -649,6 +649,7 @@ SDK顺序关节状态
 - 启动发布前探测是否已有其他LowCmd写入者。
 
 只读模式不会创建LowCmd发布器，因此可以先检查实体机器人状态而不发送电机命令。
+主动DDS仿真由独立看门狗进程创建该发布器；主进程的Transport仅订阅状态，将计算出的命令通过本机接口交给看门狗。
 
 #### `Go2Recorder`
 
@@ -664,7 +665,7 @@ logs/go2_real/go2_real_<时间>.jsonl
 #### `run()`与`parse_args()`
 
 `parse_args()`定义命令行参数；`run()`负责把配置、Controller、DDS Transport和Recorder组织成完整程序。
-主动DDS仿真模式的`finally`路径会发送约1秒阻尼命令；只读模式不发布电机命令。
+主动DDS仿真模式的`finally`路径会通知独立看门狗停止，由看门狗发送约1秒阻尼命令；主进程卡住或被强制结束时，看门狗由100毫秒命令超时触发同一停止路径。只读模式不发布电机命令。
 
 ### 5. 键盘速度输入
 
@@ -824,7 +825,11 @@ python deploy/deploy_real/deploy_real_go2.py --check
 python -m unittest discover -s tests -p 'test_go2*.py'
 ```
 
-当前应为23项全部通过。
+当前为27项离线测试通过，DDS集成测试默认跳过。运行六种动态DDS/MuJoCo故障场景：
+
+```bash
+GO2_DDS_TESTS=1 python -m unittest discover -s tests -p test_go2_watchdog.py -v
+```
 
 ### 4. 官方DDS/MuJoCo闭环
 
@@ -909,8 +914,8 @@ python deploy/deploy_real/deploy_real_go2.py eno1 --read-only --shadow-policy --
 ```text
 只读LowState
 → 策略只推理、不下发
-→ 键盘输入与独立停机方案的仿真验收
-→ 受限电机控制与急停验收
+→ 键盘输入、受限电机测试与独立停机的仿真验收（已通过）
+→ 真机受限电机控制与停机验收（待完成）
 → FixStand验收
 → 落地站立
 → 微速前进与停止
@@ -929,17 +934,18 @@ python deploy/deploy_real/deploy_real_go2.py eno1 --read-only --shadow-policy --
 - Go2 Real程序、Real配置、四态FSM和安全控制器；
 - Unitree SDK2、DDS、LowState、LowCmd与CRC接入；
 - 官方 `unitree_mujoco` 前进和组合指令闭环；
-- 23项Go2自动测试；
+- 27项Go2离线测试及包含六种场景的DDS集成测试；
 - Go2专用LowCmd电机模式已按宇树Go2低层示例改为`0x01`，离线契约测试覆盖初始化和发送；
 - 正式模型冻结到 `deploy/pre_train/go2/motion.pt`；
 - 实体Go2 EDU有线网络配置及只读LowState连接，未下发电机命令。
 - 真机状态下12秒只读策略影子检查，进入Policy并记录351帧策略输出，未下发电机命令。
 - 键盘前进与`X`/空格归零的动态DDS/MuJoCo验收；修复主循环复制状态前取时间导致的误报超时。
+- 独立软件看门狗、第二终端停止和受限单关节测试的动态DDS/MuJoCo验证。
 
 当前尚未完成：
 
 - 实体IMU、关节方向、App虚拟摇杆数据来源与数据更新频率的逐项核对；
-- 独立停机路径的仿真和真机验证；
+- 独立停机路径的真机验证；
 - 实体阻尼、受限电机控制与FixStand验收；
 - 实体策略下发；
 - 落地运动与长时验收。
@@ -962,4 +968,14 @@ python deploy/deploy_real/deploy_real_go2.py eno1 --read-only --shadow-policy --
 
 修正后使用宇树官方Python DDS桥接、Go2 MJCF、与训练匹配的MuJoCo关节参数以及`lo`网卡、domain 1运行动态仿真。键盘两段`W`前进，分别用`X`和空格归零，最后用`Z`退出。`logs/go2_real/go2_real_20260929_173459.jsonl`记录609帧：`fix_stand`250帧、`policy`359帧，软件安全故障为零。机身前进约0.95米；归零并保持策略运行期间，约10.0至11.5秒的机身高度维持在0.32米，前后位置约0.946至0.940米。`Z`触发阻尼退出后，仿真机身降低；这不是保持站立的停车方式。
 
-以上完成键盘前进、归零停走和程序退出的动态仿真验收。真机电机控制与独立停机仍未验收，不能据此解除真机只读限制。
+### 2026-09-30 受限电机测试与独立停机
+
+新增`Go2MotorTest`，通过`--motor-test`执行不加载策略的单关节小幅往返。默认偏移0.01弧度、时长2秒；最大偏移0.02弧度，时长1至3秒，Kp=5、Kd=0.5；实际位移、速度和估算PD力矩超限时锁存阻尼。该入口仍仅允许`lo`和非零domain，实体网卡上主动下发继续被禁止。
+
+新增`deploy/deploy_real/go2_watchdog.py`。主动DDS仿真的主程序仅订阅LowState并计算目标，由独立看门狗进程唯一发布LowCmd。命令100毫秒未更新、LowState超时、安全检查失败、运行到期或第二终端请求停止时锁存阻尼；后续命令不能恢复主动控制。另一终端使用`python -m deploy.deploy_real.go2_watchdog --stop --domain-id 1`，收到看门狗确认后才报告成功。
+
+本次不依赖外部`unitree_mujoco`工作目录；`tests/go2_dds_fixture.py`使用项目已有Go2 MJCF和官方SDK消息提供无窗口动态测试桥接。27项离线测试通过；额外DDS集成测试覆盖单关节往返、地面超限、第二终端停止、SIGSTOP、SIGKILL、LowState断流，六种场景通过。最终复核的首帧阻尼延迟分别为：第二终端43.54毫秒、SIGSTOP 118.81毫秒、SIGKILL 101.48毫秒、断流118.65毫秒；持续阻尼约1秒，停止后未再出现正Kp命令，CRC和0x01电机模式检查通过。详情见`docs/go2_watchdog_validation.md`。
+
+方向测试固定机身并关闭重力，只验证映射与关节响应。地面测试保留重力，低增益控制使关节偏移超限后进入阻尼，不能据此认为无支撑真机试验安全。软件看门狗不能覆盖电脑断电、其自身被强制结束或通信完全中断；实体停机与电机控制仍待验收。下一步是核对实体状态、原厂运动服务切换、实际停机条件与受限测试摆放方案。
+
+以上完成键盘前进、归零停走、受限单关节测试和独立软件停机的动态仿真验收。真机电机控制与独立停机仍未验收，不能据此解除真机只读限制。

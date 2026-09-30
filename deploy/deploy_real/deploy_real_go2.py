@@ -144,6 +144,7 @@ class Go2Mode(str, Enum):
     FIX_STAND = "fix_stand"
     POLICY = "policy"
     DAMPING = "damping"
+    MOTOR_TEST = "motor_test"
 
 
 class Go2FSM:
@@ -413,6 +414,65 @@ class Go2Controller:
         return Go2Command(self.fsm.mode, self._to_sdk(target), self._to_sdk(kp), self._to_sdk(kd))
 
 
+class Go2MotorTest:
+    """从当前姿态开始，对一个关节做短时小幅往返；不加载策略。"""
+
+    def __init__(self, config, joint_name, amplitude, duration):
+        if not np.isfinite(amplitude) or not 0 < abs(amplitude) <= 0.02:
+            raise ValueError("电机测试幅度必须在±0.02弧度内且不能为零")
+        if not np.isfinite(duration) or not 1 <= duration <= 3:
+            raise ValueError("电机测试时长必须在1至3秒内")
+        self.config = config
+        self.joint = int(config.policy_to_sdk[config.data["policy"]["joint_names"].index(joint_name)])
+        self.amplitude = float(amplitude)
+        self.duration = float(duration)
+        self.initial_q = None
+        self.started_at = None
+        self.last_step_time = None
+        self.reason = ""
+        self.command = np.zeros(3, dtype=np.float32)
+        self.safety = Go2Safety(config.safety, config.stiffness, config.damping, config.torque_limits)
+
+    def emergency_stop(self, now, reason="用户停止电机测试"):
+        if not self.reason:
+            self.reason = str(reason)
+
+    def step(self, now, state):
+        try:
+            q = _array(state.joint_pos_sdk, "joint_pos_sdk")
+            dq = _array(state.joint_vel_sdk, "joint_vel_sdk")
+            roll, pitch = quaternion_to_roll_pitch(state.quaternion_wxyz)
+            loop_dt = None if self.last_step_time is None else now - self.last_step_time
+            result = self.safety.check_state(now, state.timestamp, roll, pitch,
+                                             q[self.config.policy_to_sdk], dq[self.config.policy_to_sdk], loop_dt)
+            if not result.safe:
+                raise ValueError(result.reason)
+            if self.initial_q is None:
+                self.initial_q = q.copy()
+                self.started_at = now
+            elapsed = now - self.started_at
+            target = self.initial_q.copy()
+            target[self.joint] += self.amplitude * np.sin(np.pi * np.clip(elapsed / self.duration, 0, 1)) ** 2
+            if elapsed >= self.duration:
+                self.emergency_stop(now, "电机测试时长结束")
+            if np.max(np.abs(q - self.initial_q)) > 0.04:
+                raise ValueError("电机测试实际位移超过0.04弧度")
+            if np.max(np.abs(dq)) > 2.0 or np.max(np.abs(5.0 * (target - q) - 0.5 * dq)) > 1.0:
+                raise ValueError("电机测试速度或估算力矩超过限制")
+            if np.any(target[self.config.policy_to_sdk] < self.safety.joint_lower) or np.any(
+                    target[self.config.policy_to_sdk] > self.safety.joint_upper):
+                raise ValueError("电机测试目标超过关节限位")
+        except (ValueError, TypeError) as error:
+            self.emergency_stop(now, f"电机测试安全检查: {error}")
+        finally:
+            self.last_step_time = now
+        if self.reason:
+            return Go2Command(Go2Mode.DAMPING, np.zeros(12, dtype=np.float32),
+                             np.zeros(12, dtype=np.float32), np.full(12, 3.0, dtype=np.float32), self.reason)
+        return Go2Command(Go2Mode.MOTOR_TEST, target, np.full(12, 5.0, dtype=np.float32),
+                         np.full(12, 0.5, dtype=np.float32))
+
+
 class Go2DDSTransport:
     """在LowState/LowCmd与Go2Controller之间转换。"""
 
@@ -492,7 +552,8 @@ class Go2DDSTransport:
             motor.kd = float(command.kd_sdk[i])
             motor.tau = 0.0
         self._low_cmd.crc = self._crc.Crc(self._low_cmd)
-        self._publisher.Write(self._low_cmd)
+        if self._publisher.Write(self._low_cmd) is False:
+            raise RuntimeError("LowCmd写入DDS失败")
 
 
 class Go2Recorder:
@@ -507,7 +568,7 @@ class Go2Recorder:
         if self.enabled:
             directory = resolve_path(config["directory"], root_dir)
             os.makedirs(directory, exist_ok=True)
-            self.path = os.path.join(directory, time.strftime("go2_real_%Y%m%d_%H%M%S.jsonl"))
+            self.path = os.path.join(directory, time.strftime("go2_real_%Y%m%d_%H%M%S") + f"_{time.time_ns()}.jsonl")
             self.stream = open(self.path, "x", encoding="utf-8")
 
     def write(self, now, state, command, velocity_command):
@@ -540,24 +601,34 @@ class Go2Recorder:
 def run(args):
     if not args.check and args.network != "lo" and not args.read_only:
         raise RuntimeError("真机主动电机控制尚未验收，仅允许--read-only")
-    if not args.check and not args.read_only and not args.simulation_auto:
-        raise RuntimeError("主动控制仅支持lo回环网卡上的--simulation-auto")
+    motor_test = getattr(args, "motor_test", False)
+    if not args.check and not args.read_only and not (args.simulation_auto or motor_test):
+        raise RuntimeError("主动控制仅支持lo回环网卡上的DDS仿真")
     if args.keyboard and not sys.stdin.isatty():
         raise RuntimeError("--keyboard需要前台交互式终端")
     config = Go2RealConfig.load(os.path.abspath(args.config), LEGGED_GYM_ROOT_DIR)
-    controller = Go2Controller(config)
-    controller.validate_policy()
+    if motor_test:
+        controller = Go2MotorTest(config, args.test_joint, args.test_amplitude, args.duration)
+    else:
+        controller = Go2Controller(config)
+        controller.validate_policy()
     if args.check:
         print("Real配置和TorchScript策略加载成功；未初始化DDS。")
         return 0
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize
     domain_id = int(config.data["dds"]["domain_id"] if args.domain_id is None else args.domain_id)
-    if args.simulation_auto and (args.network != "lo" or domain_id == 0):
-        raise ValueError("--simulation-auto仅允许在lo回环网卡且非0 DDS domain中使用")
+    if not args.read_only:
+        from deploy.deploy_real.go2_watchdog import require_simulation
+        require_simulation(args.network, domain_id, args.duration)
     if args.shadow_policy and args.duration <= float(config.data["fsm"]["stand_duration"]):
         raise ValueError("--shadow-policy的--duration必须大于站姿插值时间")
     ChannelFactoryInitialize(domain_id, args.network)
-    transport = Go2DDSTransport(config, publish=not args.read_only)
+    if args.read_only:
+        transport = Go2DDSTransport(config, publish=False)
+    else:
+        from deploy.deploy_real.go2_watchdog import WatchdogTransport
+        transport = WatchdogTransport(config, os.path.abspath(args.config), args.network, domain_id,
+                                      args.duration, args.connect_timeout, motor_test)
     recorder = Go2Recorder(config.data["recording"], LEGGED_GYM_ROOT_DIR)
     keyboard = TerminalKeys() if args.keyboard else None
     keyboard_velocity = KeyboardVelocity(config.data["command_limits"]) if args.keyboard else None
@@ -575,6 +646,9 @@ def run(args):
         if state is not None:
             break
         if time.monotonic() >= deadline:
+            if not args.read_only:
+                transport.close()
+            recorder.close()
             raise TimeoutError("等待LowState超时；请检查网卡、DDS domain和机器人/仿真器")
         time.sleep(0.01)
     print("已连接LowState。")
@@ -582,8 +656,12 @@ def run(args):
         print("当前为只读模式，不创建LowCmd发布器。")
         if args.shadow_policy:
             print("自动计算策略目标；可使用键盘输入。" if args.keyboard else "自动计算零速度策略目标。")
+    elif motor_test:
+        print(f"DDS仿真受限电机测试：{args.test_joint}，幅度{args.test_amplitude}弧度，时长{args.duration}秒。")
     else:
         print("DDS仿真自动站立并进入策略；Ctrl+C退出。")
+    if not args.read_only:
+        print(f"独立停止：python -m deploy.deploy_real.go2_watchdog --stop --domain-id {domain_id}")
     next_step = run_started_at = time.monotonic()
     auto_policy_attempted = False
     last_reason = None
@@ -622,34 +700,35 @@ def run(args):
                     auto_policy_attempted = True
                     label = "只读策略影子检查" if args.shadow_policy else "DDS仿真自动验收"
                     print(f"{label}：进入Policy={entered}。")
-                if now - run_started_at >= args.duration:
-                    stop = True
             else:
-                controller.set_velocity_command([0.0, 0.0, 0.0])
+                if not motor_test:
+                    controller.set_velocity_command([0.0, 0.0, 0.0])
+            if (args.simulation_auto or args.shadow_policy or motor_test) and now - run_started_at >= args.duration:
+                stop = True
             command = controller.step(now, state)
-            transport.send(command)
+            if transport.send(command) is False:
+                print("独立看门狗已接管停机，等待阻尼完成。")
+                break
             recorder.write(now, state, command, controller.command)
             if command.reason and command.reason != last_reason:
                 print(f"安全降级至{command.mode.value}: {command.reason}")
             last_reason = command.reason
+            if not args.read_only and command.mode is Go2Mode.DAMPING:
+                break
             next_step += config.control_dt
             time.sleep(max(0.0, next_step - time.monotonic()))
     finally:
-        if keyboard:
-            keyboard.close()
-        if not args.read_only:
-            controller.emergency_stop(time.monotonic(), "程序退出")
-            count = max(1, int(config.data["fsm"]["damping_duration"] / config.control_dt))
-            for _ in range(count):
-                latest_state = transport.snapshot()
-                if latest_state is not None:
-                    transport.send(controller.step(time.monotonic(), latest_state))
-                time.sleep(config.control_dt)
-        recorder.close()
+        try:
+            if not args.read_only:
+                transport.close()
+        finally:
+            if keyboard:
+                keyboard.close()
+            recorder.close()
     return 0
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Go2安全真机部署入口")
     parser.add_argument("network", nargs="?", help="DDS网卡；仿真为lo，真机为有线网卡")
     parser.add_argument("--config", default=os.path.join(LEGGED_GYM_ROOT_DIR, "deploy/deploy_real/configs/go2.yaml"))
@@ -659,20 +738,31 @@ def parse_args():
     parser.add_argument("--read-only", action="store_true", help="只接收LowState，不创建LowCmd发布器")
     parser.add_argument("--shadow-policy", action="store_true", help="仅配合--read-only，默认计算零速度策略目标")
     parser.add_argument("--simulation-auto", action="store_true", help="仅用于lo与非0 domain的DDS仿真")
+    parser.add_argument("--motor-test", action="store_true", help="仅在DDS仿真中执行受限单关节测试，不运行策略")
+    parser.add_argument("--test-joint", default="FL_hip_joint", help="受限测试的策略关节名称，默认FL_hip_joint")
+    parser.add_argument("--test-amplitude", type=float, default=0.01, help="测试目标偏移，默认0.01弧度，最大±0.02")
     parser.add_argument("--keyboard", action="store_true", help="仅用于只读影子检查或DDS仿真；按键超时归零")
-    parser.add_argument("--duration", type=float, default=10.0, help="自动仿真或只读影子检查的总时长")
+    parser.add_argument("--duration", type=float, help="总时长；电机测试默认2秒，其他模式默认10秒")
     parser.add_argument("--command", type=float, nargs=3, default=[0.3, 0.0, 0.0], metavar=("VX", "VY", "YAW"))
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.duration is None:
+        args.duration = 2.0 if args.motor_test else 10.0
+    if not np.isfinite(args.duration) or args.duration <= 0:
+        parser.error("--duration必须为正有限数")
+    if not np.isfinite(args.connect_timeout) or not 0 < args.connect_timeout <= 30:
+        parser.error("--connect-timeout必须在(0, 30]秒内")
     if not args.check and not args.network:
         parser.error("非--check模式必须提供network")
     if args.shadow_policy and (not args.read_only or args.simulation_auto or args.check):
         parser.error("--shadow-policy必须配合--read-only，且不能与--check或--simulation-auto同时使用")
+    if args.motor_test and (args.read_only or args.shadow_policy or args.simulation_auto or args.check or args.keyboard):
+        parser.error("--motor-test单独使用，不能与策略、只读或键盘速度模式混用")
     if args.keyboard and not (args.shadow_policy or args.simulation_auto):
         parser.error("--keyboard仅允许配合--shadow-policy或--simulation-auto")
     if not args.check and args.network != "lo" and not args.read_only:
         parser.error("真机主动电机控制尚未验收，仅允许--read-only")
-    if not args.check and not args.read_only and not args.simulation_auto:
-        parser.error("主动控制仅支持lo回环网卡上的--simulation-auto")
+    if not args.check and not args.read_only and not (args.simulation_auto or args.motor_test):
+        parser.error("主动控制仅支持lo回环网卡上的DDS仿真")
     return args
 
 

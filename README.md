@@ -46,8 +46,9 @@ Actor 只依赖真机可获得的信息。Critic 不会进入导出的 TorchScri
 - 通信、姿态、关节、动作变化、目标角和估算力矩安全检查；
 - 官方 `unitree_mujoco + unitree_sdk2py + DDS` 前进与组合指令闭环；
 - 键盘前进、`X`/空格归零后的站立保持，在动态DDS/MuJoCo中通过；
+- 独立看门狗、第二终端停止及受限单关节测试；六种动态DDS/MuJoCo场景通过；
 - 实体 Go2 EDU 有线只读连接，以及 12 秒真机状态驱动的策略影子检查；
-- 23 项 Go2 自动测试。
+- 27 项 Go2 离线测试，以及包含六种故障场景的 DDS 集成测试。
 
 影子检查没有创建 LowCmd 发布器，也没有向电机发送指令。实体电机控制、停机路径和落地运动均未验收，因此不能宣称已经完成真机运动部署。
 
@@ -62,6 +63,7 @@ deploy/common/go2_policy.py          MuJoCo与Real共用的观测/动作接口
 deploy/deploy_mujoco/deploy_go2.py   Go2专用Python MuJoCo运行器
 deploy/deploy_mujoco/configs/go2.yaml
 deploy/deploy_real/deploy_real_go2.py
+deploy/deploy_real/go2_watchdog.py    DDS仿真独立指令看门狗与停止入口
 deploy/deploy_real/configs/go2.yaml
 deploy/pre_train/go2/motion.pt       冻结的正式TorchScript Actor
 resources/robots/go2/mjcf/           官方Go2 MJCF及场景资产
@@ -193,7 +195,13 @@ conda activate unitree-rl
 python -m unittest discover -s tests -p 'test_go2*.py'
 ```
 
-当前基线为 23 项 Go2 测试全部通过，覆盖训练契约、45 维策略接口、MJCF、关节映射、FSM、控制器、只读影子模式、键盘输入超时和安全降级。
+当前基线为 27 项 Go2 离线测试通过，覆盖训练契约、45 维策略接口、MJCF、关节映射、FSM、控制器、只读影子模式、键盘输入超时、受限测试和看门狗锁存。默认跳过需要本地DDS网络的集成测试。
+
+自动启动测试用MuJoCo/DDS桥接并验证六种故障场景，无需连接机器人或另装 `unitree_mujoco`：
+
+```bash
+GO2_DDS_TESTS=1 python -m unittest discover -s tests -p test_go2_watchdog.py -v
+```
 
 ## 5. Unitree SDK2 / DDS 部署
 
@@ -238,7 +246,7 @@ python deploy/deploy_real/deploy_real_go2.py <有线网卡> \
 只读LowState
 → 策略只推理、不下发
 → 键盘速度输入与零速停走的动态DDS仿真（已通过）
-→ 独立停机路径的仿真验证
+→ 独立停机与受限电机控制的仿真验证（已通过）
 → 真机受限电机控制与停机验证
 → FixStand与落地站立
 → 微速运动与停止
@@ -246,6 +254,10 @@ python deploy/deploy_real/deploy_real_go2.py <有线网卡> \
 ```
 
 策略接收三维速度目标，再输出 12 个关节动作。键盘速度输入已接入只读影子模式和 DDS 仿真；停止输入 0.25 秒后速度目标归零。动态MuJoCo验证了`X`和空格归零后继续站立。`Z`或退出程序会转入阻尼，仿真机器人随后降低机身。手机 App 的虚拟摇杆是否可供底层程序读取仍待核对；真机主动控制与独立停机尚未验收，程序继续阻止向真机下发电机指令。键盘用法见 [Go2 真机部署指南](deploy/deploy_real/README_GO2.zh.md)。
+
+DDS仿真主动控制由独立看门狗进程发布LowCmd；主控制程序冻结或被强制结束后，命令超过100毫秒未更新会锁存停止。另一终端可运行 `python -m deploy.deploy_real.go2_watchdog --stop --domain-id 1` 请求阻尼。该措施仍依赖电脑、看门狗进程和通信，尚未验证真机效果。
+
+六种场景的测试条件与实测延迟见 [独立停机仿真记录](docs/go2_watchdog_validation.md)。
 
 任何阶段出现通信超时、姿态异常、关节撞限位、异常声响或安全降级，都应立即停止升级测试并检查 `logs/go2_real/*.jsonl`，不能通过放宽安全阈值掩盖问题。
 
