@@ -54,6 +54,8 @@ Actor 只依赖真机可获得的信息。Critic 不会进入导出的 TorchScri
 
 ## 关键目录
 
+本仓库仅支持 Go2，包含其训练环境、URDF/MJCF、策略和部署配置。公共训练框架及许可证保留；上游其他机器人示例可从 [宇树官方仓库](https://github.com/unitreerobotics/unitree_rl_gym) 获取。
+
 ```text
 legged_gym/envs/go2/                 Go2 训练配置与45/60维观测
 legged_gym/scripts/train.py          Isaac Gym训练入口
@@ -90,7 +92,10 @@ cd /home/wkh/projects/unitree_rl_gym
 ```bash
 source /home/wkh/anaconda3/etc/profile.d/conda.sh
 conda activate LeggedGym
+export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 ```
+
+在项目根目录设置 `PYTHONPATH`，确保训练与 Play 加载本仓库，避免导入环境中另一个已安装的 `legged_gym`。
 
 正式训练前建议先运行小规模契约检查：
 

@@ -1000,3 +1000,11 @@ GO2_DDS_TESTS=1 python -m unittest discover -s tests -p test_go2_watchdog.py -v
 这些时间是本次本机测量，不能作为真机或其他负载条件下的最坏延迟保证。软件看门狗不能覆盖电脑断电、其自身被强制结束或通信完全中断；实体停机、退出后的姿态与电机控制仍待验收，真机网卡上的主动控制仍被程序阻止。下一步是核对实体状态、原厂运动服务切换、实际停机条件与受限测试摆放方案。
 
 以上完成键盘前进、归零停走、受限单关节测试和独立软件停机的动态仿真验收。真机电机控制与独立停机仍未验收，不能据此解除真机只读限制。
+
+### 2026-09-30 Go2 专用化清理
+
+删除G1、H1、H1_2的训练环境、URDF/MJCF与网格资产、预训练策略、MuJoCo/Real配置，以及G1 C++部署目录。旧`deploy_real.py`、`config.py`、`deploy_real/common/`和旧人形机器人部署说明仅供这三种机器人使用，一并删除；旧`deploy_mujoco.py`使用人形机器人观测和配置格式，也不属于当前Go2流程，已删除。共删除244个受版本控制的文件，清除它们的任务注册和导入，保留Go2专用入口、公共训练框架、`deploy/common/go2_policy.py`和许可证。
+
+清理后的验证：27项Go2离线测试通过；`deploy_real_go2.py --check`通过；直接MuJoCo零速度运行3秒，数值有限、未跌倒；Isaac Gym在8个Go2环境中完成一轮训练，Actor为45维、Critic为60维。小规模训练使用独立的`go2_cleanup_smoke`实验目录，不覆盖正式策略。此次改动不改变真机只读限制。
+
+本地`LeggedGym`环境同时安装了另一个`legged_gym`，直接运行脚本可能导入该版本。在项目根目录执行`export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"`后，再启动训练和Play，确保加载本仓库；README已补充该步骤。
