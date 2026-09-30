@@ -257,7 +257,7 @@ python deploy/deploy_real/deploy_real_go2.py <有线网卡> \
 
 DDS仿真主动控制由独立看门狗进程发布LowCmd；主控制程序冻结或被强制结束后，命令超过100毫秒未更新会锁存停止。另一终端可运行 `python -m deploy.deploy_real.go2_watchdog --stop --domain-id 1` 请求阻尼。该措施仍依赖电脑、看门狗进程和通信，尚未验证真机效果。
 
-六种场景的测试条件与实测延迟见 [独立停机仿真记录](docs/go2_watchdog_validation.md)。
+六种场景的测试条件与实测延迟见 [独立停机仿真记录](.codex/Doc.md#2026-09-30-受限电机测试与独立停机)。
 
 任何阶段出现通信超时、姿态异常、关节撞限位、异常声响或安全降级，都应立即停止升级测试并检查 `logs/go2_real/*.jsonl`，不能通过放宽安全阈值掩盖问题。
 
