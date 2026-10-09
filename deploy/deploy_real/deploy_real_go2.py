@@ -571,7 +571,7 @@ class Go2Recorder:
             self.path = os.path.join(directory, time.strftime("go2_real_%Y%m%d_%H%M%S") + f"_{time.time_ns()}.jsonl")
             self.stream = open(self.path, "x", encoding="utf-8")
 
-    def write(self, now, state, command, velocity_command):
+    def write(self, now, state, command, velocity_command, feedback=None):
         if not self.enabled:
             return
         to_list = lambda value: np.asarray(value, dtype=np.float32).tolist()
@@ -586,6 +586,8 @@ class Go2Recorder:
             "target_pos_sdk": to_list(command.target_pos_sdk),
             "kp_sdk": to_list(command.kp_sdk), "kd_sdk": to_list(command.kd_sdk),
         }
+        if feedback is not None:
+            row["feedback"] = feedback
         self.stream.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
         self.count += 1
         if self.count % self.flush_interval == 0:

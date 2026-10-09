@@ -328,8 +328,8 @@ def serve(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Go2 DDS仿真独立停止接口")
-    parser.add_argument("--stop", action="store_true", help="请求正在运行的仿真看门狗进入阻尼")
+    parser = argparse.ArgumentParser(description="Go2本机独立停止接口（仿真domain非零，真机验收domain 0）")
+    parser.add_argument("--stop", action="store_true", help="请求正在运行的看门狗或真机验收进程进入阻尼")
     parser.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--domain-id", type=int, default=1)
     parser.add_argument("--config", default=os.path.join(LEGGED_GYM_ROOT_DIR, "deploy/deploy_real/configs/go2.yaml"))
@@ -343,7 +343,10 @@ def main():
         response = request(default_socket(args.domain_id), {"type": "stop"})
         if not response.get("stopped"):
             raise RuntimeError("没有收到停止确认")
-        print("独立看门狗已锁存停止并发送阻尼指令。")
+        if response.get('dds_submitted') is False:
+            print("启动停止已锁存；此次确认不表示阻尼已下发，请核对原厂模式和实体状态。")
+        else:
+            print("独立进程已锁存停止，阻尼指令已提交DDS；此确认不代表机器人已停止。")
     else:
         serve(args)
 
