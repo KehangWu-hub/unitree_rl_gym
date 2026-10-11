@@ -8,9 +8,9 @@
 
 [环境安装](doc/setup_zh.md) · [真机部署](deploy/deploy_real/README_GO2.zh.md) · [验证与技术说明](doc/go2_validation.md)
 
-| Go2 真机 | MuJoCo 仿真 |
-|:---:|:---:|
-| ![Go2 实体机器人](doc/images/go2-real.jpg) | ![Go2 在 MuJoCo 中的仿真画面](doc/images/go2-mujoco.png) |
+| Isaac Gym | MuJoCo | 真机 |
+|:---:|:---:|:---:|
+| <img src="doc/images/go2-isaacgym.png" alt="本项目 Go2 策略在 Isaac Gym 中的回放" width="240" height="180"> | <img src="doc/images/go2-mujoco-preview.png" alt="Go2 在 MuJoCo 中的仿真画面" width="240" height="180"> | <img src="doc/images/go2-real-preview.jpg" alt="Go2 实体机器人" width="240" height="180"> |
 
 ## 特性
 
