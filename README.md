@@ -46,7 +46,7 @@ cd unitree_rl_gym
 export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
-依赖安装见[环境安装说明](doc/setup_zh.md)。训练需要 Isaac Gym、NVIDIA GPU 和 `rsl_rl`；仿真与部署使用 PyTorch、NumPy、PyYAML 和 MuJoCo，DDS 通信另需 `unitree_sdk2py`。本项目使用独立的训练与部署环境，分别命名为 `LeggedGym` 和 `unitree-rl`。
+依赖安装见[环境安装说明](doc/setup_zh.md)。下文统一使用 `unitree-rl` Conda 环境，训练、仿真和真机部署的依赖均安装在该环境中。训练需要 Isaac Gym、NVIDIA GPU 和 `rsl_rl`；MuJoCo 仿真需要 PyTorch、NumPy、PyYAML 和 MuJoCo，真机 DDS 通信另需 `unitree_sdk2py`。仅使用已有策略进行仿真或真机部署时，无需安装 Isaac Gym 和 `rsl_rl`。
 
 仓库提供冻结模型和真机配置。安装部署依赖后，可先检查模型，无需连接机器人：
 
@@ -57,10 +57,10 @@ python deploy/deploy_real/deploy_real_go2.py --check
 
 ### 训练与导出
 
-在训练环境中运行：
+安装训练依赖后运行：
 
 ```bash
-conda activate LeggedGym
+conda activate unitree-rl
 python legged_gym/scripts/train.py \
   --task go2 --headless --num_envs 4096 --max_iterations 1500 \
   --run_name go2_45x60_official_rewards
@@ -85,7 +85,7 @@ logs/rough_go2_45x60_rewards/exported/
 
 ### MuJoCo 仿真
 
-默认仿真配置使用上面的导出文件。准备好策略与参数后，在部署环境运行：
+默认仿真配置使用上面的导出文件。准备好策略与参数后运行：
 
 ```bash
 conda activate unitree-rl
