@@ -8,6 +8,10 @@
 
 [环境安装](doc/setup_zh.md) · [真机部署](deploy/deploy_real/README_GO2.zh.md) · [验证与技术说明](doc/go2_validation.md)
 
+| Go2 真机 | MuJoCo 仿真 |
+|:---:|:---:|
+| ![Go2 实体机器人](doc/images/go2-real.jpg) | ![Go2 在 MuJoCo 中的仿真画面](doc/images/go2-mujoco.png) |
+
 ## 特性
 
 - **可部署的训练结构**：45 维 Actor 使用 IMU、关节状态、速度指令和动作历史；60 维 Critic 在训练时使用额外的仿真信息。
