@@ -6,7 +6,7 @@
 
 > 基于 [Unitree 官方 unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) 开发，专注 Go2。本项目为独立开发项目，不代表 Unitree 官方实现或背书。
 
-[环境安装](doc/setup_zh.md) · [真机部署](deploy/deploy_real/README_GO2.zh.md) · [验证与技术说明](doc/go2_validation.md)
+[环境安装](doc/setup_zh.md) · [真机部署](deploy/deploy_real/README_GO2.zh.md)
 
 | Isaac Gym | MuJoCo | 真机 |
 |:---:|:---:|:---:|
@@ -147,7 +147,7 @@ doc/                       安装与技术文档
 
 Isaac Gym 训练、策略导出、MuJoCo 和 DDS 仿真链路已完成验证。实体 Go2 已完成站姿接管、零速度策略、短时前后移动、左右侧移、行进中转向及停止检查。
 
-真机结果限于短时现场测试，尚未独立测量实际速度与距离，也未完成长时运行、原地转向及完整断链或电脑断电后的停机验证。侧移曾出现停滞，当前已有连续运动记录，但触发条件与重复可靠性仍需研究。具体范围见[验证与技术说明](doc/go2_validation.md)。
+真机结果限于短时现场测试，尚未独立测量实际速度与距离，也未完成长时运行、原地转向、侧移在不同起始状态下的重复可靠性，以及完整断链或电脑断电后的停机验证。
 
 ## 来源与许可证
 
