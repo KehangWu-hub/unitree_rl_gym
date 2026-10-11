@@ -314,8 +314,14 @@ class Go2Controller:
         fsm_config = config.data["fsm"]
         self.fsm = Go2FSM(config.default_joint_pos, fsm_config["stand_duration"])
         self.safety = Go2Safety(config.safety, config.stiffness, config.damping, config.torque_limits)
+        self.policy_target_mode = config.safety.get('policy_target_mode', 'reject')
+        if self.policy_target_mode not in ('reject', 'clip'):
+            raise ValueError('policy_target_mode必须为reject或clip')
+        self.last_target_processing = None
         self.stand_kp = _array(fsm_config["stand_kp"], "stand_kp")
         self.stand_kd = _array(fsm_config["stand_kd"], "stand_kd")
+        self.last_policy_fault = None
+        self.last_policy_observation = None
         self.last_action = np.zeros(12, dtype=np.float32)
         self.last_step_time = None
         self.command = np.zeros(3, dtype=np.float32)
@@ -370,6 +376,7 @@ class Go2Controller:
             self.last_action,
             self.config.data,
         )
+        self.last_policy_observation = observation.copy()
         with torch.inference_mode():
             tensor = torch.tensor(observation.tolist(), dtype=torch.float32).unsqueeze(0)
             output = self.policy(tensor)
@@ -400,7 +407,33 @@ class Go2Controller:
         else:
             try:
                 action, target = self._policy_action(state, q, dq)
+                raw_target = target.copy()
+                if self.policy_target_mode == 'clip':
+                    target = self.safety.limit_target(target)
+                self.last_target_processing = {
+                    'mode': self.policy_target_mode,
+                    'raw_target_policy': raw_target.tolist(),
+                    'applied_reference_policy': target.tolist(),
+                    'clipped_joints': np.flatnonzero(raw_target != target).tolist(),
+                    'max_correction_rad': float(np.max(np.abs(raw_target - target))),
+                }
                 result = self.safety.check_policy_command(action, self.last_action, target, q, dq)
+                if not result.safe:
+                    violating = np.flatnonzero((target < self.safety.joint_lower) | (target > self.safety.joint_upper))
+                    self.last_policy_fault = {
+                        'time': float(now), 'reason': result.reason,
+                        'observation': self.last_policy_observation.tolist(),
+                        'velocity_command': self.command.tolist(),
+                        'action': action.tolist(), 'previous_action': self.last_action.tolist(),
+                        'raw_target_policy': raw_target.tolist(),
+                        'checked_target_policy': target.tolist(),
+                        'violating_joints': [
+                            {'joint': self.config.data['policy']['joint_names'][int(i)],
+                             'target_rad': float(target[i]),
+                             'lower_rad': float(self.safety.joint_lower[i]),
+                             'upper_rad': float(self.safety.joint_upper[i])}
+                            for i in violating],
+                    }
             except (ValueError, RuntimeError, TypeError) as error:
                 result = SafetyResult(False, f"策略推理失败: {error}")
             if result.safe:

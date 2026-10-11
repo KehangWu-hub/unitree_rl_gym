@@ -6,8 +6,8 @@ simulation_duration: 30.0
 simulation_dt: 0.002
 command: [0.5, 0.0, 0.0]
 
-# 与训练时使用的Isaac Gym资产选项保持一致。上游MJCF有意包含了该Gym任务中不存在的
-# 电机被动损耗，因此在此覆盖相应参数。
+# 训练时用的是 URDF，部署时用的是 MJCF，两者的关节参数和摩擦设置不同。
+# 加载 MJCF 后用下面的值覆盖这些设置，让仿真尽量接近训练环境。
 model_overrides:
   joint_damping: 0.0
   armature: 0.0

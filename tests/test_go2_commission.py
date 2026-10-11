@@ -24,6 +24,15 @@ class Go2CommissionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.cfg = Go2RealConfig.load(ROOT / 'deploy/deploy_real/configs/go2.yaml', str(ROOT))
+        # 既有用例验证10.5/12Nm历史日志兼容；当前默认单独验证。
+        cls.cfg.data.pop('commissioning', None)
+
+    def test_current_default_uses_verified_torque_profile(self):
+        cfg = Go2RealConfig.load(ROOT / 'deploy/deploy_real/configs/go2.yaml', str(ROOT))
+        with tempfile.NamedTemporaryFile(mode='w') as log, patch('deploy.deploy_real.go2_commission.assess_stand',return_value={'result':'stand_hold_lower_passed'}):
+            trial = PolicyCheck(cfg, log.name)
+        self.assertEqual(trial.policy_pd_limit, 14.)
+        self.assertEqual(trial.torque_limit, 16.)
 
     def prone(self, now=1.0):
         # 来源：2026-10-09实体趴卧状态；SDK顺序FR、FL、RR、RL。
@@ -111,6 +120,25 @@ class Go2CommissionTest(unittest.TestCase):
             self.assertTrue(np.all(out.target_pos_sdk>=test.lower) and np.all(out.target_pos_sdk<=test.upper))
         cmd.target_pos_sdk=test.stand+.1
         np.testing.assert_allclose(test.limit_policy_pd(cmd,state).target_pos_sdk,cmd.target_pos_sdk)
+
+    def test_candidate_torque_settings_are_bounded_and_need_new_zero_trial(self):
+        from dataclasses import replace
+        import json
+        for pd, feedback, valid in [(14.,16.,True),(0.,12.,False),(14.,12.,False),(20.,22.,False),(float('nan'),16.,False)]:
+            data = copy.deepcopy(self.cfg.data)
+            data['commissioning'] = {'policy_pd_limit_nm':pd, 'feedback_torque_limit_nm':feedback}
+            cfg = replace(self.cfg,data=data)
+            with tempfile.NamedTemporaryFile(mode='w') as log, patch('deploy.deploy_real.go2_commission.assess_stand',return_value={'result':'stand_hold_lower_passed'}):
+                if valid:
+                    trial = PolicyCheck(cfg,log.name)
+                    self.assertEqual(trial.policy_pd_limit,14.)
+                    self.assertEqual(trial.torque_limit,16.)
+                else:
+                    with self.assertRaisesRegex(ValueError,'验收力矩参数'):PolicyCheck(cfg,log.name)
+            if valid:
+                with tempfile.NamedTemporaryFile(mode='w') as log, patch('deploy.deploy_real.go2_commission.assess_policy',return_value={'result':'zero_velocity_policy_trial_passed'}):
+                    log.write(json.dumps({'mode':'policy','feedback':{'policy_entry_blend_seconds':.5,'policy_pd_limit_nm':10.5}}));log.flush()
+                    with self.assertRaisesRegex(ValueError,'当前接管曲线和PD限幅'):PolicyCheck(cfg,log.name,forward=True)
 
     def test_forward_timeline_zeroing_exit_and_log(self):
         import torch
@@ -212,6 +240,131 @@ class Go2CommissionTest(unittest.TestCase):
         self.assertEqual(cmd.mode,Go2Mode.FIX_STAND)
         np.testing.assert_allclose(cmd.target_pos_sdk,initial)
         with self.assertRaises(ValueError):test.begin_handoff(1.3)
+
+    def test_keyboard_input_timeout_zero_and_budget(self):
+        import torch
+        with tempfile.NamedTemporaryFile(mode='w') as log, patch('deploy.deploy_real.go2_commission.assess_policy',return_value={'result':'zero_velocity_policy_trial_passed'}):
+            log.write('{"mode":"policy","feedback":{"policy_entry_blend_seconds":0.5,"policy_pd_limit_nm":10.5}}');log.flush()
+            test=PolicyCheck(self.cfg,log.name,policy=lambda obs:torch.zeros((1,12)),forward=True,forward_speed=.3,keyboard=True)
+        test.started=1.
+        test.feed_key('w',8.9);self.assertFalse(test.keyboard_event['accepted'])
+        np.testing.assert_array_equal(test.velocity_profile(9.),0)
+        test.feed_key('w',9.)
+        for i in range(1,11):test.velocity_profile(9.+i*.02)
+        self.assertGreater(test.keyboard_velocity,.19)
+        test.feed_key('x',9.201)
+        np.testing.assert_array_equal(test.velocity_profile(9.22),0)
+        test.feed_key('w',9.3);test.velocity_profile(9.32)
+        np.testing.assert_array_equal(test.velocity_profile(9.56),0)
+        for i in range(200):
+            now=9.6+i*.02;test.feed_key('w',now);test.velocity_profile(now)
+        self.assertTrue(2<=test.keyboard_used<=2.03)
+        self.assertEqual(test.keyboard_velocity,0)
+        np.testing.assert_array_equal(test.velocity_profile(15.),0)
+
+    def test_keyboard_lateral_yaw_isolation_and_signed_budget(self):
+        import torch
+        for axis,key,opposite,index,limit in [('lateral','d','a',1,.30),('yaw','e','q',2,.3)]:
+            with self.subTest(axis=axis), tempfile.NamedTemporaryFile(mode='w') as log, patch('deploy.deploy_real.go2_commission.assess_policy',return_value={'result':'zero_velocity_policy_trial_passed'}):
+                log.write('{"mode":"policy","feedback":{"policy_entry_blend_seconds":0.5,"policy_pd_limit_nm":10.5}}');log.flush()
+                test=PolicyCheck(self.cfg,log.name,policy=lambda obs:torch.zeros((1,12)),forward=True,forward_speed=.4,keyboard=True,keyboard_axis=axis)
+            test.started=1.;test.velocity_profile(9.)
+            test.feed_key('w',9.);self.assertIsNone(test.keyboard_event)
+            test.feed_key(key,9.)
+            for i in range(1,21): v=test.velocity_profile(9.+i*.02)
+            self.assertAlmostEqual(v[index],-limit,places=5)
+            np.testing.assert_array_equal(np.delete(v,index),0)
+            self.assertGreater(test.keyboard_used,.35)
+            test.feed_key(opposite,9.41)
+            np.testing.assert_array_equal(test.velocity_profile(9.42),0)
+            self.assertGreater(test.velocity_profile(9.44)[index],0)
+            test.feed_key('x',9.45)
+            np.testing.assert_array_equal(test.velocity_profile(9.46),0)
+
+    def test_backward_ignores_forward_and_other_axes_and_x_clears(self):
+        import torch
+        with tempfile.NamedTemporaryFile(mode='w') as log, patch('deploy.deploy_real.go2_commission.assess_policy',return_value={'result':'zero_velocity_policy_trial_passed'}):
+            log.write('{"mode":"policy","feedback":{"policy_entry_blend_seconds":0.5,"policy_pd_limit_nm":10.5}}');log.flush()
+            test=PolicyCheck(self.cfg,log.name,policy=lambda obs:torch.zeros((1,12)),forward=True,forward_speed=.4,keyboard=True,keyboard_axis='backward')
+        self.assertEqual(test.settle_tracking_tolerance, .25)
+        test.started=1.;test.velocity_profile(9.)
+        for key in ('w', 'a', 'd', 'q', 'e'):
+            test.feed_key(key,9.)
+            self.assertIsNone(test.keyboard_event)
+        test.feed_key('s',9.)
+        for i in range(1,21): command=test.velocity_profile(9.+i*.02)
+        self.assertAlmostEqual(command[0],-.3,places=5)
+        np.testing.assert_array_equal(command[1:],0)
+        test.feed_key('x',9.41)
+        np.testing.assert_array_equal(test.velocity_profile(9.42),0)
+        test.feed_key('s',9.5);test.velocity_profile(9.52)
+        np.testing.assert_array_equal(test.velocity_profile(10.11),0)
+
+    def test_walk_turn_requires_explicit_forward_and_x_clears_both_axes(self):
+        import torch
+        with tempfile.NamedTemporaryFile(mode='w') as log, patch('deploy.deploy_real.go2_commission.assess_policy',return_value={'result':'zero_velocity_policy_trial_passed'}):
+            log.write('{"mode":"policy","feedback":{"policy_entry_blend_seconds":0.5,"policy_pd_limit_nm":10.5}}');log.flush()
+            test=PolicyCheck(self.cfg,log.name,policy=lambda obs:torch.zeros((1,12)),forward=True,forward_speed=.4,keyboard=True,keyboard_axis='yaw',yaw_speed=.5,turn_forward_speed=.3)
+        test.started=1.;test.velocity_profile(9.);test.feed_key('e',9.)
+        for i in range(1,26): v=test.velocity_profile(9.+i*.02)
+        np.testing.assert_allclose(v,[.3,0.,-.5],atol=1e-6)
+        test.feed_key('x',9.51)
+        np.testing.assert_array_equal(test.velocity_profile(9.52),0)
+        with patch('sys.stdin.isatty',return_value=True),redirect_stderr(StringIO()),self.assertRaises(SystemExit):
+            parse_args(['eno1','--forward-check','ready','--keyboard','--forward-speed','0.4','--keyboard-axis','forward','--turn-forward-speed','0.3','--start-standing','--confirm-standing','--release-mode','--allow-body-movement','--allow-policy-movement'])
+
+    def test_yaw_candidate_and_rejected_key_feedback(self):
+        import torch
+        with tempfile.NamedTemporaryFile(mode='w') as log, patch('deploy.deploy_real.go2_commission.assess_policy',return_value={'result':'zero_velocity_policy_trial_passed'}):
+            log.write('{"mode":"policy","feedback":{"policy_entry_blend_seconds":0.5,"policy_pd_limit_nm":10.5}}');log.flush()
+            test=PolicyCheck(self.cfg,log.name,policy=lambda obs:torch.zeros((1,12)),forward=True,forward_speed=.4,keyboard=True,keyboard_axis='yaw',yaw_speed=.5)
+        test.started=1.;test.velocity_profile(9.);test.feed_key('q',9.)
+        for i in range(1,26):test.velocity_profile(9.+i*.02)
+        self.assertAlmostEqual(test.keyboard_velocity,.5)
+        test.keyboard_used=4.;test.feed_key('e',9.52)
+        self.assertFalse(test.keyboard_event['accepted'])
+        self.assertEqual(test.keyboard_event['reason'],'budget_exhausted')
+        test.feed_key('x',9.53)
+        self.assertTrue(test.keyboard_event['accepted'])
+        np.testing.assert_array_equal(test.velocity_profile(9.54),0)
+
+    def test_walk_turn_real_cli_rejects_failed_yaw_candidates(self):
+        base=['eno1','--forward-check','ready.jsonl','--keyboard','--forward-speed','0.4','--keyboard-axis','yaw','--turn-forward-speed','0.3','--start-standing','--confirm-standing','--release-mode','--allow-body-movement','--allow-policy-movement']
+        with patch('sys.stdin.isatty',return_value=True):
+            self.assertEqual(parse_args(base+['--yaw-speed','0.3']).yaw_speed,.3)
+            for yaw in ('0.4','0.5'):
+                with redirect_stderr(StringIO()),self.assertRaises(SystemExit):
+                    parse_args(base+['--yaw-speed',yaw])
+
+    def test_extended_keyboard_real_cli_duration(self):
+        base=['eno1','--forward-check','ready.jsonl','--keyboard','--start-standing','--confirm-standing','--release-mode','--allow-body-movement','--allow-policy-movement']
+        with patch('sys.stdin.isatty',return_value=True):
+            self.assertEqual(parse_args(base+['--forward-speed','0.4']).duration,29)
+            self.assertEqual(parse_args(base+['--forward-speed','0.3']).duration,23)
+            with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+                parse_args(base+['--forward-speed','0.4','--duration','23'])
+
+    def test_extended_keyboard_repeat_delay_and_stop(self):
+        import torch
+        with tempfile.NamedTemporaryFile(mode='w') as log, patch('deploy.deploy_real.go2_commission.assess_policy',return_value={'result':'zero_velocity_policy_trial_passed'}):
+            log.write('{"mode":"policy","feedback":{"policy_entry_blend_seconds":0.5,"policy_pd_limit_nm":10.5}}');log.flush()
+            test=PolicyCheck(self.cfg,log.name,policy=lambda obs:torch.zeros((1,12)),forward=True,forward_speed=.4,keyboard=True)
+        test.started=1.
+        self.assertEqual(test.duration,29.)
+        test.velocity_profile(10.);test.feed_key('w',10.)
+        for i in range(1,25): test.velocity_profile(10.+i*.02)
+        self.assertAlmostEqual(test.keyboard_velocity,.4)
+        test.feed_key('w',10.484);test.velocity_profile(10.5)
+        self.assertAlmostEqual(test.keyboard_velocity,.4)
+        test.feed_key('x',10.501)
+        np.testing.assert_array_equal(test.velocity_profile(10.52),0)
+        test.feed_key('w',10.6);test.velocity_profile(10.62)
+        np.testing.assert_array_equal(test.velocity_profile(11.201),0)
+        for i in range(250):
+            now=11.3+i*.02;test.feed_key('w',now);test.velocity_profile(now)
+        self.assertTrue(4<=test.keyboard_used<=4.03)
+        self.assertEqual(test.keyboard_velocity,0)
+        np.testing.assert_array_equal(test.velocity_profile(21.),0)
 
     def test_prone_passive_calves_do_not_change_policy_limits(self):
         before = copy.deepcopy(self.cfg.safety)
@@ -613,10 +766,18 @@ class Go2CommissionTest(unittest.TestCase):
         message.crc = 123
         message.tick = 42
         message.motor_state[3].tau_est = .25
+        message.foot_force = [11, 22, 33, 44]
+        message.foot_force_est = [1, 2, 3, 4]
+        message.imu_state.accelerometer = [0., 0., 9.81]
         transport._on_state(message)
         state = transport.snapshot()
         self.assertEqual(state.feedback['state_tick'], 42)
         self.assertEqual(state.feedback['joint_tau_est_sdk'][3], .25)
+        self.assertEqual(state.feedback['foot_force_raw'], [11, 22, 33, 44])
+        self.assertEqual(state.feedback['foot_force_est_raw'], [1, 2, 3, 4])
+        np.testing.assert_allclose(state.feedback['imu_accelerometer_raw'], [0., 0., 9.81])
+        message.foot_force[0] = 99
+        self.assertEqual(state.feedback['foot_force_raw'][0], 11)
         message.crc = 0
         message.tick = 99
         transport._on_state(message)

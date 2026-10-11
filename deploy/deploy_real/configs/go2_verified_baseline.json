@@ -1,0 +1,64 @@
+{
+  "name": "Go2 2026-10-11 short trials 14/16Nm",
+  "policy_path": "deploy/pre_train/go2/motion.pt",
+  "policy_sha256": "a955b95e911e30f2db5d0435676c76dcf9b193a663adb5992a9b5abcb056773a",
+  "config_path": "deploy/deploy_real/configs/go2.yaml",
+  "config_sha256": "03a291741ba5fe6d01ed9447f052dd1e96efea485268e50c12ad889af42cb184",
+  "verified_scope": [
+    "2s zero command",
+    "0.30m/s forward with +/-0.30rad/s yaw",
+    "X command zeroing with operator stop confirmation",
+    "automatic lowering",
+    "0.30m/s reverse short trial with operator confirmation",
+    "0.30m/s left command approximately 4s with continuous steps confirmed",
+    "-0.30m/s right command approximately 3.53s and active X zeroing with operator confirmation"
+  ],
+  "not_verified": [
+    "long duration",
+    "in-place yaw",
+    "full network loss or computer power failure",
+    "repeatable lateral transitions across initial/contact states",
+    "independently measured actual translation speed and distance",
+    "unique trigger of earlier lateral stalls"
+  ],
+  "readiness": {
+    "stand": {
+      "path": "logs/go2_real/commission/go2_real_20261009_202857_1791548937567603811.jsonl",
+      "sha256": "2e6c2f1edeca6901a40c6137e1284d3a77b45170834c370d290ea55d03d96601"
+    },
+    "zero": {
+      "path": "logs/go2_real/commission/go2_real_20261011_142926_1791700166349779242.jsonl",
+      "sha256": "b4013e24ef712775a64637e0a27aa8ba30102044f56f0ed7b2210a6bcddd3221"
+    }
+  },
+  "short_trial_status": {
+    "modes": [
+      "backward",
+      "lateral"
+    ],
+    "hardware_scope": "short trials only; lateral repeatability and previous stall trigger unresolved",
+    "settle_tracking_tolerance_rad": 0.25,
+    "lateral_command_mps": 0.3,
+    "historical_simulation_reports": [
+      "logs/go2_real/commission/lateral_030_full_budget_20261011.json",
+      "logs/go2_real/commission/lateral_030_x_stop_20261011.json"
+    ],
+    "trials": {
+      "backward": {
+        "path": "logs/go2_real/commission/go2_real_20261011_153423_1791704063001854259.jsonl",
+        "sha256": "724c26fc482f3a4c58c2d8ab2a3ed1a6e5def3d11ecfd4202406ec32a29d30a7",
+        "operator_confirmed": true
+      },
+      "left_budget_zero": {
+        "path": "logs/go2_real/commission/go2_real_20261011_170105_1791709265609518632.jsonl",
+        "sha256": "c595a848b3d479842cd4430cd7a3d2692134b12cabf74507181debb8a05401a5",
+        "operator_confirmed": true
+      },
+      "right_active_x_zero": {
+        "path": "logs/go2_real/commission/go2_real_20261011_170400_1791709440879733087.jsonl",
+        "sha256": "fa8d095026aa38873f1e09ddb9da2d4d086fb4c4406639c1ccc656459ca170d4",
+        "operator_confirmed": true
+      }
+    }
+  }
+}

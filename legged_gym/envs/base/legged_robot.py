@@ -154,7 +154,7 @@ class LeggedRobot(BaseTask):
         # 向算法发送超时信息
         if self.cfg.env.send_timeouts:
             self.extras["time_outs"] = self.time_out_buf
-    
+
     def compute_reward(self):
         """计算奖励。
             调用经self._prepare_reward_function()处理后权重非零的奖励函数，
@@ -452,7 +452,7 @@ class LeggedRobot(BaseTask):
         self.base_lin_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
         self.base_ang_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
-      
+
 
         # 关节位置偏移和PD增益
         self.default_dof_pos = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)

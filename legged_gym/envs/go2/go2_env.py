@@ -1,7 +1,6 @@
 from legged_gym.envs.base.legged_robot import LeggedRobot
 import torch
 
-
 class Go2Robot(LeggedRobot):
     """使用真机可获取观测量的Go2环境。"""
 

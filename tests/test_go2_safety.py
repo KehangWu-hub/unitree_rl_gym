@@ -19,6 +19,17 @@ class Go2SafetyTest(unittest.TestCase):
         self.safety = Go2Safety(limits, np.full(12, 20), np.full(12, 0.5), np.full(12, 40))
         self.q = np.asarray([0, 0.8, -1.5] * 4, dtype=np.float32)
 
+    def test_runtime_joint_limits_match_training_urdf(self):
+        import xml.etree.ElementTree as ET
+        from pathlib import Path
+        from deploy.deploy_real.deploy_real_go2 import Go2RealConfig
+        root=Path(__file__).resolve().parents[1]
+        cfg=Go2RealConfig.load(root/'deploy/deploy_real/configs/go2.yaml',str(root))
+        limits={j.attrib['name']:j.find('limit').attrib for j in ET.parse(root/'resources/robots/go2/urdf/go2.urdf').getroot().findall('joint') if j.find('limit') is not None}
+        for i,name in enumerate(cfg.data['policy']['joint_names']):
+            self.assertAlmostEqual(cfg.safety['joint_lower'][i],float(limits[name]['lower']),places=5)
+            self.assertAlmostEqual(cfg.safety['joint_upper'][i],float(limits[name]['upper']),places=5)
+
     def test_nominal_state_and_command_pass(self):
         self.assertTrue(self.safety.check_state(1.0, 0.95, 0.1, -0.1, self.q, np.zeros(12), 0.02).safe)
         target = self.q + 0.1
