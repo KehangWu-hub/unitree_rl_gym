@@ -118,7 +118,7 @@ pip install -e .
 通过 Git 克隆仓库：
 
 ```bash
-git clone https://github.com/unitreerobotics/unitree_rl_gym.git
+git clone https://github.com/KehangWu-hub/unitree_rl_gym.git
 ```
 
 #### 2.4.2 安装
