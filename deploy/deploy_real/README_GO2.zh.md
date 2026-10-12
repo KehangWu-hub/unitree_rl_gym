@@ -4,8 +4,6 @@
 
 [项目首页](../../README.md) · [环境安装](../../doc/setup_zh.md)
 
-当前真机发布基线为 [v1.0](../../doc/releases/v1.0.md)，现场操作者已确认运动效果验收通过；冻结文件摘要见 [版本清单](configs/go2_v1.0_manifest.json)。
-
 ## 运行前准备
 
 ```bash

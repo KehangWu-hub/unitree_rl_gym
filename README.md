@@ -8,8 +8,6 @@
 
 [环境安装](doc/setup_zh.md) · [真机部署](deploy/deploy_real/README_GO2.zh.md)
 
-当前发布基线为 **v1.0**，已由现场操作者确认真机运动效果验收通过。版本范围、模型与配置摘要见 [v1.0 记录](doc/releases/v1.0.md)。
-
 | Isaac Gym | MuJoCo | 真机 |
 |:---:|:---:|:---:|
 | <img src="doc/images/go2-isaacgym.png" alt="本项目 Go2 策略在 Isaac Gym 中的回放" width="240" height="180"> | <img src="doc/images/go2-mujoco-preview.png" alt="Go2 在 MuJoCo 中的仿真画面" width="240" height="180"> | <img src="doc/images/go2-real-preview.jpg" alt="Go2 实体机器人" width="240" height="180"> |
