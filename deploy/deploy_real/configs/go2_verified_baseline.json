@@ -19,7 +19,9 @@
     "full network loss or computer power failure",
     "repeatable lateral transitions across initial/contact states",
     "independently measured actual translation speed and distance",
-    "unique trigger of earlier lateral stalls"
+    "unique trigger of earlier lateral stalls",
+    "unified keyboard forward at 0.30m/s with current parameters",
+    "unified keyboard direction switching on hardware"
   ],
   "readiness": {
     "stand": {

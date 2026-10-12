@@ -49,8 +49,8 @@ def validate_readiness(path, mode, config, manifest):
     # 与实际执行共用判据，包括持续时间、曲线和PD/反馈参数匹配。
     return commission.PolicyCheck(config, str(path), forward=mode != 'zero',
                                   forward_speed=.4 if mode != 'zero' else .1,
-                                  keyboard=mode != 'zero', keyboard_axis={'walk-turn':'yaw', 'backward':'backward', 'lateral':'lateral'}.get(mode, 'forward'),
-                                  yaw_speed=.3, turn_forward_speed=.3 if mode == 'walk-turn' else 0.)
+                                  keyboard=mode != 'zero', keyboard_axis={'all':'all', 'walk-turn':'yaw', 'backward':'backward', 'lateral':'lateral'}.get(mode, 'forward'),
+                                  yaw_speed=.3, turn_forward_speed=.3 if mode in ('all', 'walk-turn') else 0.)
 
 
 def commission_arguments(mode, network, readiness):
@@ -59,14 +59,14 @@ def commission_arguments(mode, network, readiness):
             '--start-standing', '--confirm-standing', '--release-mode',
             '--allow-body-movement', '--allow-policy-movement']
     if mode != 'zero':
-        args += ['--keyboard', '--forward-speed', '0.4', '--keyboard-axis', {'walk-turn':'yaw', 'backward':'backward', 'lateral':'lateral'}[mode],
-                 '--yaw-speed', '0.3', '--turn-forward-speed', '0.3' if mode == 'walk-turn' else '0.0']
+        args += ['--keyboard', '--forward-speed', '0.4', '--keyboard-axis', {'all':'all', 'walk-turn':'yaw', 'backward':'backward', 'lateral':'lateral'}[mode],
+                 '--yaw-speed', '0.3', '--turn-forward-speed', '0.3' if mode in ('all', 'walk-turn') else '0.0']
     return args
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode', choices=('zero', 'walk-turn', 'backward', 'lateral'), default='walk-turn')
+    parser.add_argument('--mode', choices=('all', 'zero', 'walk-turn', 'backward', 'lateral'), default='all')
     parser.add_argument('--network', default='eno1')
     parser.add_argument('--readiness', type=Path, help='覆盖本机已验证的前置JSONL路径')
     action = parser.add_mutually_exclusive_group()
@@ -86,7 +86,13 @@ def main(argv=None):
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         parser.error(f'离线核对失败：{error}。历史日志不随仓库分发；可用--readiness提供匹配记录。')
     print(f'基线：{manifest["name"]}；PD {trial.policy_pd_limit:g}Nm，反馈停止 {trial.torque_limit:g}Nm。', flush=True)
-    if options.mode == 'walk-turn':
+    if options.mode == 'all':
+        print('29秒流程：第8～20秒接受Q/W/E/A/S/D；累计运动最多4秒，第22秒开始降低。', flush=True)
+        print('W/S前后、A/D左右：0.30m/s；Q/E前进0.30m/s加左右转0.30rad/s。', flush=True)
+        print('最后方向键生效，换方向先归零再加速；X/空格归零，Z/Ctrl+C阻尼。', flush=True)
+        print('看到按键窗口提示后再操作；松键最长0.6秒归零，请主动按X。', flush=True)
+        print('统一入口的W和方向切换尚待现场确认，已有单方向记录不等于切换通过。', flush=True)
+    elif options.mode == 'walk-turn':
         print('29秒流程：5秒接管、2秒保持、1秒零速；第8～20秒接受Q/E；第22秒开始降低。', flush=True)
         print('Q/E：前进0.30m/s加左右转0.30rad/s；累计运动最多4秒。X/空格归零。', flush=True)
         print('只在看到“按住Q/E控制yaw”后按键；松键最长0.6秒归零，请主动按X。', flush=True)

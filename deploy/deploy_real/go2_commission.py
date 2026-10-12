@@ -445,26 +445,29 @@ class PolicyCheck(StandCheck):
             raise ValueError('前进速度只允许0.10、0.30或键盘0.40m/s限时档')
         if (keyboard and (not forward or forward_speed not in (.3, .4))) or (forward_speed == .4 and not keyboard):
             raise ValueError('键盘验收仅允许0.30或0.40m/s前进档')
-        if keyboard_axis not in ("forward", "backward", "lateral", "yaw") or (keyboard_axis != "forward" and (not keyboard or forward_speed != .4)):
-            raise ValueError("侧移/转向仅允许0.4档独立键盘验收")
+        if keyboard_axis not in ("forward", "backward", "lateral", "yaw", "all") or (keyboard_axis != "forward" and (not keyboard or forward_speed != .4)):
+            raise ValueError("后退/侧移/转向/统一键盘仅允许0.4档受限流程")
         if yaw_speed not in (.3,.4,.5) or (yaw_speed != .3 and keyboard_axis != "yaw"):
             raise ValueError("0.50rad/s仅允许转向键盘候选")
-        if turn_forward_speed not in (0.,.3) or (turn_forward_speed and keyboard_axis != "yaw"):
-            raise ValueError("边走边转仅允许yaw轴加0.30m/s前进")
+        if turn_forward_speed not in (0.,.3) or (turn_forward_speed and keyboard_axis not in ("yaw", "all")):
+            raise ValueError("边走边转仅允许yaw或all轴加0.30m/s前进")
+        if keyboard_axis == "all" and (yaw_speed != .3 or turn_forward_speed != .3):
+            raise ValueError("统一键盘固定0.30m/s平移与0.30rad/s行进转向")
         self.turn_forward_speed = turn_forward_speed
         self.yaw_speed = yaw_speed
         self.keyboard_axis = keyboard_axis
-        self.keyboard_axis_index = {"forward":0,"backward":0,"lateral":1,"yaw":2}[keyboard_axis]
-        self.keyboard_keys = {"forward":("w",),"backward":("s",),"lateral":("a","d"),"yaw":("q","e")}[keyboard_axis]
+        self.keyboard_axis_index = {"forward":0,"backward":0,"lateral":1,"yaw":2,"all":None}[keyboard_axis]
+        self.keyboard_keys = {"forward":("w",),"backward":("s",),"lateral":("a","d"),"yaw":("q","e"),"all":("q","w","e","a","s","d")}[keyboard_axis]
         self.keyboard = keyboard
         self.keyboard_window_end = 20. if forward_speed == .4 else 14.
         self.keyboard_budget = 4. if forward_speed == .4 else 2.
         self.keyboard_timeout = .6 if forward_speed == .4 else .25
-        self.keyboard_input = KeyboardVelocity([.3 if keyboard_axis == 'backward' else forward_speed,.30,yaw_speed], timeout=self.keyboard_timeout) if keyboard else None
+        self.keyboard_input = KeyboardVelocity([.3 if keyboard_axis in ('backward', 'all') else forward_speed,.30,yaw_speed], timeout=self.keyboard_timeout) if keyboard else None
         self.keyboard_used = 0.
         self.keyboard_last_time = None
         self.keyboard_budget_time = None
         self.keyboard_velocity = 0.
+        self.keyboard_command = np.zeros(3, dtype=np.float32)
         self.keyboard_event = None
         self.keyboard_sequence = 0
         self.forward_speed = forward_speed
@@ -544,6 +547,15 @@ class PolicyCheck(StandCheck):
             raise ValueError('PD限幅后的策略目标超出模型范围')
         return Go2Command(Go2Mode.POLICY, target, command.kp_sdk, command.kd_sdk)
 
+    def feed_keys(self, keys, now):
+        # 同一次终端读取中，归零键优先于方向键和自动重复输入。
+        stop_key = next((key for key in keys if key in ('x', ' ')), None)
+        if stop_key is not None:
+            self.feed_key(stop_key, now)
+        else:
+            for key in keys:
+                self.feed_key(key, now)
+
     def feed_key(self, key, now):
         if not self.keyboard or key not in (*self.keyboard_keys,'x',' '):
             return
@@ -558,6 +570,7 @@ class PolicyCheck(StandCheck):
         self.keyboard_input.feed(key,now)
         if key in ('x',' '):
             self.keyboard_velocity = 0.
+            self.keyboard_command.fill(0.)
         self.keyboard_sequence += 1
         self.keyboard_event = {'key':key,'elapsed':elapsed,'sequence':self.keyboard_sequence,'accepted':True}
 
@@ -571,6 +584,8 @@ class PolicyCheck(StandCheck):
         self.account_keyboard_budget(now)
         self.keyboard_last_time = now
         elapsed = now-self.started
+        if self.keyboard_axis == "all":
+            return self.unified_keyboard_profile(now, elapsed, dt)
         target = self.keyboard_input.sample(now)[self.keyboard_axis_index] if 8 <= elapsed < self.keyboard_window_end and self.keyboard_used < self.keyboard_budget else 0.
         if target == 0:
             self.keyboard_velocity = 0.
@@ -583,6 +598,23 @@ class PolicyCheck(StandCheck):
         if self.turn_forward_speed and self.keyboard_velocity:
             velocity[0]=self.turn_forward_speed*abs(self.keyboard_velocity)/self.yaw_speed
         return velocity
+
+    def unified_keyboard_profile(self, now, elapsed, dt):
+        target = self.keyboard_input.sample(now) if 8 <= elapsed < self.keyboard_window_end and self.keyboard_used < self.keyboard_budget else np.zeros(3)
+        if target[2]:
+            target[0] = self.turn_forward_speed * abs(target[2]) / self.yaw_speed
+        # 每次只执行最后一个方向键；换方向先归零一个策略周期，再重新加速。
+        if not np.any(target) or (np.any(self.keyboard_command) and
+                not np.array_equal(np.sign(target), np.sign(self.keyboard_command))):
+            self.keyboard_command.fill(0.)
+        else:
+            ratio = min(1., (self.keyboard_velocity + dt) / .3)
+            self.keyboard_command = np.asarray(target * ratio, dtype=np.float32)
+        self.keyboard_velocity = float(np.max(np.abs(self.keyboard_command)))
+        if self.keyboard_command[0] < 0 or self.keyboard_command[1] != 0:
+            # 仅实际执行后退/侧移后沿用这些动作既有的降低末态门槛。
+            self.settle_tracking_tolerance = self.tracking_tolerance
+        return self.keyboard_command.copy()
 
     def velocity_profile(self, now):
         """前1秒零速度、2秒前进（0.3秒平滑加减速）、后2秒零速度。"""
@@ -861,42 +893,58 @@ def assess_keyboard(rows, config):
         if not policy or policy[-1]['time']-policy[0]['time']<window_end-5.2:
             raise ValueError('缺少完整键盘策略阶段')
         axis=policy[0]['feedback'].get('keyboard_axis','forward')
-        index={'forward':0,'backward':0,'lateral':1,'yaw':2}[axis]
-        keys={'forward':('w',),'backward':('s',),'lateral':('a','d'),'yaw':('q','e')}[axis]
+        index={'forward':0,'backward':0,'lateral':1,'yaw':2,'all':None}[axis]
+        keys={'forward':('w',),'backward':('s',),'lateral':('a','d'),'yaw':('q','e'),'all':('q','w','e','a','s','d')}[axis]
         yaw_limit=policy[0]['feedback'].get('yaw_speed_rad_s',.3)
         if yaw_limit not in (.3,.4,.5): raise ValueError('未知转向限幅')
         lateral_limit=policy[0]['feedback'].get('lateral_speed_mps', .22)
         if not any(abs(lateral_limit-value)<1e-6 for value in (.22, .3)): raise ValueError('未知侧移限幅')
-        limit={'forward':speed,'backward':.3,'lateral':lateral_limit,'yaw':yaw_limit}[axis]
+        limit={'forward':speed,'backward':.3,'lateral':lateral_limit,'yaw':yaw_limit,'all':.3}[axis]
         turn_forward=policy[0]['feedback'].get('turn_forward_speed_mps',0.)
-        if turn_forward not in (0.,.3) or (turn_forward and axis!='yaw'):
+        if turn_forward not in (0.,.3) or (turn_forward and axis not in ('yaw','all')):
             raise ValueError('未知边走边转配置')
-        moving=[r for r in policy if abs(r['velocity_command'][index])>1e-4]
-        if not moving: raise ValueError('没有键盘前进记录')
+        if axis == 'all' and (yaw_limit != .3 or abs(lateral_limit-.3)>1e-6 or turn_forward != .3
+                or policy[0]['feedback'].get('forward_speed_mps') != .3):
+            raise ValueError('统一键盘限幅配置不符')
+        def moving_command(row):
+            v = np.asarray(row['velocity_command'])
+            return bool(np.any(np.abs(v)>1e-4)) if axis == 'all' else abs(v[index])>1e-4
+        moving=[r for r in policy if moving_command(r)]
+        if not moving: raise ValueError('没有键盘运动记录')
         for r in policy:
             v=np.asarray(r['velocity_command'])
-            expected=np.zeros(3);expected[index]=v[index]
-            if turn_forward: expected[0]=turn_forward*abs(v[index])/yaw_limit
-            if not np.isfinite(v).all() or abs(v[index])>limit+1e-5 or (axis=='forward' and v[0]<0) or (axis=='backward' and v[0]>0) or not np.allclose(v,expected,atol=1e-6,rtol=0):
-                raise ValueError('键盘速度超出受限前进范围')
-            if abs(v[index])>0 and not 8<=r['feedback']['test_elapsed']<window_end+.05:
-                raise ValueError('前进出现在输入窗口之外')
+            if v.shape != (3,) or not np.isfinite(v).all():
+                raise ValueError('键盘速度必须为有限三维向量')
+            if axis == 'all':
+                translation = v[2] == 0 and (v[0] == 0 or v[1] == 0)
+                turning = v[1] == 0 and np.isclose(v[0], abs(v[2]), atol=1e-6, rtol=0)
+                valid = np.max(np.abs(v)) <= .3+1e-5 and (translation or turning)
+            else:
+                expected=np.zeros(3);expected[index]=v[index]
+                if turn_forward: expected[0]=turn_forward*abs(v[index])/yaw_limit
+                valid = (abs(v[index])<=limit+1e-5 and not (axis=='forward' and v[0]<0)
+                         and not (axis=='backward' and v[0]>0) and np.allclose(v,expected,atol=1e-6,rtol=0))
+            if not valid:
+                raise ValueError('键盘速度超出受限运动范围')
+            if moving_command(r) and not 8<=r['feedback']['test_elapsed']<window_end+.05:
+                raise ValueError('运动出现在输入窗口之外')
             if r['feedback']['keyboard_forward_seconds']>budget+.06:
-                raise ValueError('累计前进超出预算加调度余量')
+                raise ValueError('累计运动超出预算加调度余量')
         events={r['feedback']['keyboard_event']['sequence']:r['feedback']['keyboard_event'] for r in policy if r['feedback'].get('keyboard_event') and r['feedback']['keyboard_event'].get('accepted',True)}
-        if not any(e['key'] in keys for e in events.values()): raise ValueError('缺少所选轴输入')
+        if not any(e['key'] in keys for e in events.values()): raise ValueError('缺少方向键输入')
         if not any(e['key'] in ('x',' ') and e['elapsed']>moving[0]['feedback']['test_elapsed'] for e in events.values()):
-            raise ValueError('没有前进后的X/空格归零记录')
+            raise ValueError('没有运动后的X/空格归零记录')
         stops=[e for e in events.values() if e['key'] in ('x',' ')]
-        if not any(any(0<=e['elapsed']-r['feedback']['test_elapsed']<=.1 and abs(r['velocity_command'][index])>1e-4 for r in policy)
-                and any(0<=r['feedback']['test_elapsed']-e['elapsed']<=.06 and r['velocity_command'][index]==0 for r in policy) for e in stops):
-            raise ValueError('未记录到X/空格从前进切换归零')
+        if not any(any(0<=e['elapsed']-r['feedback']['test_elapsed']<=.1 and moving_command(r) for r in policy)
+                and any(0<=r['feedback']['test_elapsed']-e['elapsed']<=.06 and not np.any(r['velocity_command']) for r in policy) for e in stops):
+            raise ValueError('未记录到X/空格从运动切换归零')
+        result['command_checks_passed'] = True
         active=[r for r in rows if r.get('mode') in ('fix_stand','policy')]
         if active[-1]['time']-active[0]['time']<duration-.2: raise ValueError('完整键盘控制时长不足')
         final=rows[-1]
         state=type('RecordedState',(),{'timestamp':final['time'],'joint_pos_sdk':final['joint_pos_sdk'],'joint_vel_sdk':final['joint_vel_sdk'],'quaternion_wxyz':final['quaternion_wxyz']})()
         check_prone(config,state,final['time'])
-        return dict(result,result='keyboard_forward_and_zero_log_passed' if axis=='forward' else 'keyboard_axis_and_zero_log_passed',keyboard_axis=axis,forward_seconds=max(r['feedback']['keyboard_forward_seconds'] for r in policy))
+        return dict(result,result='keyboard_unified_and_zero_log_passed' if axis=='all' else 'keyboard_forward_and_zero_log_passed' if axis=='forward' else 'keyboard_axis_and_zero_log_passed',keyboard_axis=axis,forward_seconds=max(r['feedback']['keyboard_forward_seconds'] for r in policy))
     except (ValueError,KeyError,TypeError,AttributeError) as error:
         return dict(result,reason=str(error))
 
@@ -1067,7 +1115,7 @@ def _serve(args, config, config_sha256):
                             if not isinstance(keys,list) or len(keys)>32 or not all(isinstance(k,str) and len(k)==1 for k in keys):
                                 raise ValueError('键盘消息格式无效')
                             if isinstance(test,PolicyCheck):
-                                for key in keys: test.feed_key(key,now)
+                                test.feed_keys(keys,now)
                             if kind == 'arm':
                                 if not standing or test.started is None:
                                     test.arm(now, state)
@@ -1113,7 +1161,7 @@ def _serve(args, config, config_sha256):
                                 feedback['policy_pd_limit_nm'] = test.policy_pd_limit
                                 feedback['policy_feedback_limit_nm'] = test.torque_limit
                                 feedback['settle_tracking_tolerance_rad'] = test.settle_tracking_tolerance
-                                feedback['forward_speed_mps'] = test.forward_speed if test.forward else 0.
+                                feedback['forward_speed_mps'] = float(test.keyboard_input.limits[0]) if test.keyboard_axis == 'all' else test.forward_speed if test.forward else 0.
                                 feedback['policy_joint_velocity_limit_rad_s'] = test.policy_velocity_limit
                                 if test.keyboard:
                                     feedback['keyboard_event'] = test.keyboard_event
@@ -1236,10 +1284,10 @@ def parse_args(argv=None):
     mode.add_argument('--stand-check', action='store_true', help='17秒趴卧归位/站立/保持/降低，不运行策略')
     mode.add_argument('--policy-check', metavar='READY_JSONL', help='已通过站立验收日志；固定2秒零速度策略，整轮16秒')
     mode.add_argument('--forward-check', metavar='ZERO_JSONL', help='通过的零速度策略日志；固定2秒前进及2秒归零观察')
-    parser.add_argument('--keyboard',action='store_true',help='受限真机W前进/X归零；0.3档23秒/前进2秒，0.4档29秒/前进4秒')
-    parser.add_argument('--turn-forward-speed',type=float,choices=(0.,.3),default=0.,help='明确允许边走边转，0.30m/s前进；真机仅yaw 0.3档')
+    parser.add_argument('--keyboard',action='store_true',help='受限键盘运动/X归零；0.3档23秒/运动2秒，0.4档29秒/运动4秒')
+    parser.add_argument('--turn-forward-speed',type=float,choices=(0.,.3),default=0.,help='明确允许边走边转，0.30m/s前进；真机转向仅0.3rad/s')
     parser.add_argument('--yaw-speed',type=float,choices=(.3,.4,.5),default=.3,help='转向候选角速度，rad/s')
-    parser.add_argument('--keyboard-axis',choices=('forward','backward','lateral','yaw'),default='forward',help='单轴验收：W前进，S后退，A/D侧移，Q/E转向')
+    parser.add_argument('--keyboard-axis',choices=('forward','backward','lateral','yaw','all'),default='forward',help='all统一Q/W/E/A/S/D；其余为单轴验收')
     parser.add_argument('--forward-speed', type=float, choices=(.1, .3, .4), default=.1, help='限时前进档；0.30m/s用于候选行走，0.10m/s保留历史对照')
     parser.add_argument('--allow-policy-movement', action='store_true', help='已知策略可能迈步/漂移或按固定指令前进')
     mode.add_argument('--restore-normal', action='store_true', help='无验收进程时显式恢复原厂normal模式')
@@ -1264,12 +1312,14 @@ def parse_args(argv=None):
         args.test_amplitude = 0.02 if args.joint_check else 0.005
     if args.keyboard and (not args.forward_check or args.forward_speed not in (.3, .4)):
         parser.error('--keyboard仅允许--forward-check并显式--forward-speed 0.3或0.4')
-    if args.turn_forward_speed and args.keyboard_axis!='yaw':
-        parser.error('边走边转需要yaw轴')
+    if args.turn_forward_speed and args.keyboard_axis not in ('yaw','all'):
+        parser.error('边走边转需要yaw或all轴')
     if args.yaw_speed != .3 and args.keyboard_axis != 'yaw':
         parser.error('--yaw-speed 0.5仅允许yaw键盘档')
     if args.keyboard_axis != 'forward' and (not args.keyboard or args.forward_speed != .4):
         parser.error('后退/侧移/转向需要--keyboard --forward-speed 0.4')
+    if args.keyboard_axis == 'all' and (args.yaw_speed != .3 or args.turn_forward_speed != .3):
+        parser.error('all固定平移0.30m/s和行进转向0.30rad/s，需--turn-forward-speed 0.3')
     if args.forward_speed == .4 and not args.keyboard:
         parser.error('0.40m/s仅用于受限键盘试跑')
     args.motor_test = args.motor_test or args.response_test or args.joint_check

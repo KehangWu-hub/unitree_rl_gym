@@ -84,42 +84,50 @@ python -m deploy.deploy_real.go2_keyboard \
 
 每轮先恢复原厂站稳，保留观察人员及停止终端。已有匹配前置记录的本机可省略 `--readiness`；新环境使用自己的 `ZERO_JSONL`。
 
-### 行进中转向
+### 统一控制入口
 
 ```bash
+python -m deploy.deploy_real.go2_keyboard \
+  --network eno1 --readiness ZERO_JSONL --check
+
 python -m deploy.deploy_real.go2_keyboard \
   --network eno1 --readiness ZERO_JSONL --run
 ```
 
-默认 `walk-turn` 模式接受 Q/E：两者都向前移动，分别叠加左转或右转。前进指令为 0.30m/s，转向指令为 ±0.30rad/s。
+默认 `all` 模式在同一轮接受 Q/W/E/A/S/D，无需重新启动来切换方向。W/S 前进或后退，A/D 左右侧移，平移指令上限均为 0.30m/s。Q/E 向前移动并叠加左右转向，上限为 0.30m/s 和 ±0.30rad/s。
 
-### 后退
+每次只执行最后收到的方向键，不组合多个按键。方向改变时先归零一个策略周期，再向新方向加速。X/空格将所有速度分量归零；从转向切回平移时不会保留转向指令。
 
-```bash
-python -m deploy.deploy_real.go2_keyboard \
-  --network eno1 --mode backward --readiness ZERO_JSONL --run
-```
+统一模式共用一份 4 秒运动预算，切换方向或按 X 不会重置预算。前进和行进转向沿用原有降低末态判据；本轮实际执行过后退或侧移时，沿用这些动作既有的 0.25rad 末态门槛。
 
-S 给出最高 0.30m/s 的后退指令。
+**统一入口的 W 与跨方向切换尚待真机确认。** 已有单方向短时记录不代表统一模式已完成现场验证。
 
-### 左右侧移
+### 单方向检查
+
+保留以下模式，便于单独检查某类运动；前置记录与统一模式相同：
+
+| 模式 | 方向键 | 指令 |
+|---|---|---|
+| `--mode walk-turn` | Q/E | 前进 0.30m/s，加左右转向 0.30rad/s |
+| `--mode backward` | S | 后退 0.30m/s |
+| `--mode lateral` | A/D | 左右侧移 0.30m/s |
+
+例如仅检查侧移：
 
 ```bash
 python -m deploy.deploy_real.go2_keyboard \
   --network eno1 --mode lateral --readiness ZERO_JSONL --run
 ```
 
-A/D 分别给出最高 0.30m/s 的左移、右移指令。
-
 ### 输入与时序
 
-每个运动模式只接收对应方向键；默认模式不接收 W/A/S/D。
+统一模式接收全部方向键；单方向模式仅接收表中对应方向键。
 
 | 输入 | 作用 |
 |---|---|
-| Q / E | 行进中左转 / 右转，限默认模式 |
-| S | 后退，限 `backward` 模式 |
-| A / D | 左移 / 右移，限 `lateral` 模式 |
+| Q / E | 行进中左转 / 右转 |
+| W / S | 前进 / 后退 |
+| A / D | 左移 / 右移 |
 | X / 空格 | 速度指令立即归零，策略继续运行 |
 | Z / Ctrl+C | 终止流程并进入阻尼 |
 
@@ -136,7 +144,7 @@ A/D 分别给出最高 0.30m/s 的左移、右移指令。
 
 预算耗尽或输入窗口结束都会强制归零，之后仍执行降低。测试 X 主动停走时，应在预算耗尽前按 X。流程正常结束后现场确认机器人已降低并停住；下一轮需重新恢复站立。
 
-纯前进 W 属于 `go2_commission` 的历史键盘流程，已有旧参数下 0.40m/s 的短时记录，尚未在当前 14/16Nm 参数下单独复测；当前简短入口不提供 W 模式。Q/E 是前进叠加转向，不代表原地转向已验证。
+历史 W 前进记录使用旧参数和 0.40m/s 指令，不能作为当前统一入口 0.30m/s 前进的现场验证。Q/E 是前进叠加转向，不代表原地转向已验证。
 
 ## 停止与原厂模式恢复
 
@@ -219,9 +227,11 @@ python deploy/deploy_real/deploy_real_go2.py lo \
 `--simulation-auto` 不允许用于实体网卡。无需 DDS 的受限键盘流程检查：
 
 ```bash
-python -m deploy.deploy_mujoco.validate_go2_keyboard
+python -m deploy.deploy_mujoco.validate_go2_keyboard --unified
 ```
 
-此检查需要匹配的本机前置记录，可用 `--readiness ZERO_JSONL` 指定。报告分别评价流程、方向和运动效果；默认运动窗口实际/指令距离比门槛为 0.5，仅作为电脑端工程判据。
+此检查覆盖六个单方向及跨轴、前后和左右转向切换，需要匹配的本机前置记录，可用 `--readiness ZERO_JSONL` 指定；省略 `--unified` 则只检查旧后退/侧移模式。报告分别评价流程、指令检查和运动效果；默认运动窗口实际/指令距离比门槛为 0.5，仅作为电脑端工程判据。
+
+当前统一模式仿真仍存在速度欠跟踪，Q→E 切换在统一入口和旧单轴入口均触发相同的降低末态保护；不能将软件测试通过或正常归零等同于运动效果通过。真机卧倒姿态判据也不能直接套用为仿真运动成功指标。
 
 专项调试还提供 `go2_commission --joint-check`、`--response-test` 与 `--damping-test`。它们用于受限关节响应或停止链路检查，须按各自的姿态、幅度和时长约束执行，不能作为直接启动行走的替代步骤。
