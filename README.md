@@ -2,7 +2,7 @@
 
 面向 Unitree Go2 的强化学习运动控制项目，包含 Isaac Gym 训练、MuJoCo 仿真验证和基于 Unitree SDK2 / DDS 的真机部署工具。
 
-项目使用同一套观测与动作接口，将训练得到的策略导出为 TorchScript，并用于仿真和实体机器人推理。目前已在 Go2 EDU 上完成短时前进、后退、侧向移动、行进中转向及停止测试。
+项目使用同一套观测与动作接口，将训练得到的策略导出为 TorchScript，并用于仿真和实体机器人推理。键盘控制支持前进、后退、左右侧移、行进中转向和速度归零。
 
 > 基于 [Unitree 官方 unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) 开发，专注 Go2。本项目为独立开发项目，不代表 Unitree 官方实现或背书。
 
@@ -38,7 +38,7 @@ TorchScript 策略
 | 策略周期 | 20 ms（50 Hz） |
 | 动作缩放 | 0.25 |
 | 策略 PD 增益 | Kp = 20，Kd = 0.5 |
-| 冻结模型 | `deploy/pre_train/go2/motion.pt` |
+| 预训练策略 | `deploy/pre_train/go2/motion.pt` |
 
 Critic 仅用于训练。部署时，Actor 根据三维速度指令生成关节目标，由 PD 控制执行。
 
@@ -52,7 +52,7 @@ export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 
 依赖安装见[环境安装说明](doc/setup_zh.md)。下文统一使用 `unitree-rl` Conda 环境，训练、仿真和真机部署的依赖均安装在该环境中。训练需要 Isaac Gym、NVIDIA GPU 和 `rsl_rl`；MuJoCo 仿真需要 PyTorch、NumPy、PyYAML 和 MuJoCo，真机 DDS 通信另需 `unitree_sdk2py`。仅使用已有策略进行仿真或真机部署时，无需安装 Isaac Gym 和 `rsl_rl`。
 
-仓库提供冻结模型和真机配置。安装部署依赖后，可先检查模型，无需连接机器人：
+仓库提供预训练策略和真机配置。安装部署依赖后，可先检查模型，无需连接机器人：
 
 ```bash
 conda activate unitree-rl
@@ -113,7 +113,7 @@ python deploy/deploy_mujoco/deploy_go2.py \
 
 真机控制使用 `go2_keyboard`，默认统一接收 Q/W/E/A/S/D，X 将速度归零，也保留单方向检查模式。每轮从原厂站稳开始，经过接管和短时策略运行后自动降低，运动模式累计指令时间最多 4 秒。
 
-统一入口的纯前进与 X 归零已有短时真机确认，跨方向切换仍待验证。部署需要匹配当前模型与配置的站立、零速度前置记录；这些记录保存在本机，克隆仓库后需自行完成检查。连接、前置流程、运行命令及停止方法见 **[Go2 真机部署指南](deploy/deploy_real/README_GO2.zh.md)**。
+部署需要匹配当前模型与配置的站立、零速度前置记录；这些记录保存在本机，克隆仓库后需自行完成检查。连接、前置流程、运行命令及停止方法见 **[Go2 真机部署指南](deploy/deploy_real/README_GO2.zh.md)**。
 
 ## 测试
 
@@ -142,12 +142,6 @@ resources/robots/go2/      URDF、MJCF 与模型资产
 tests/                     Go2 软件与集成测试
 doc/                       安装与技术文档
 ```
-
-## 当前范围
-
-Isaac Gym 训练、策略导出、MuJoCo 和 DDS 仿真链路已完成验证。实体 Go2 已完成站姿接管、零速度策略、短时前后移动、左右侧移、行进中转向及停止检查。
-
-真机结果限于短时现场测试，尚未独立测量实际速度与距离，也未完成长时运行、原地转向、侧移在不同起始状态下的重复可靠性，以及完整断链或电脑断电后的停机验证。
 
 ## 来源与许可证
 
