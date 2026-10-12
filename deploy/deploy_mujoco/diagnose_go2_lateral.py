@@ -6,12 +6,13 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from deploy.common.go2_policy import action_to_target
 from deploy.deploy_mujoco.deploy_go2 import joint_addresses
 from deploy.deploy_real.deploy_real_go2 import Go2Controller, Go2RealConfig, Go2State, quaternion_to_roll_pitch
 from deploy.deploy_real.go2_keyboard import CONFIG, ROOT, sha256
 
 
-def simulate(config, row, friction, condim, joint_friction, seed_geometry='geom'):
+def simulate(config, row, friction, condim, joint_friction, seed_geometry='geom', lateral_speed=.3):
     model = mujoco.MjModel.from_xml_path(str(ROOT / 'resources/robots/go2/mjcf/scene_flat.xml'))
     model.opt.timestep = .002
     model.dof_damping[6:] = 0
@@ -35,10 +36,15 @@ def simulate(config, row, friction, condim, joint_friction, seed_geometry='geom'
         data.qpos[2] = -min(data.geom_xpos[feet, 2] - model.geom_size[feet, 0])
     mujoco.mj_forward(model, data)
     initial = data.qpos[:3].copy()
-    controller = Go2Controller(config)
+    action_processing = row['feedback'].get('policy_action_processing') or {}
+    controller = Go2Controller(config, action_step_mode=action_processing.get('mode','reject'))
+    controller.action_step_limit = action_processing.get('step_limit',controller.safety.max_action_delta)
     controller.last_action = ((np.asarray(row['feedback']['policy_target_processing']['raw_target_policy'])
                                - config.default_joint_pos) / config.data['actions']['scale']).astype(np.float32)
-    controller.set_velocity_command([0, .3, 0])
+    if 'applied_action' in action_processing:
+        controller.last_action = np.asarray(action_processing['applied_action'],dtype=np.float32)
+    # 诊断可比较不同策略输入；不改真机配置，不宣称候选已通过。
+    controller.command = np.asarray([0,lateral_speed,0],dtype=np.float32)
     targets, actual, speeds, supports, torques = [], [], [], [], []
     max_tilt = 0.
     min_height = initial[2]
@@ -48,7 +54,11 @@ def simulate(config, row, friction, condim, joint_friction, seed_geometry='geom'
                              data.sensor('imu_gyro').data.copy(), data.qpos[pos].copy(), data.qvel[vel].copy())
             q, dq = controller._policy_joint_state(state)
             action, target = controller._policy_action(state, q, dq)
+            action = controller.process_policy_action(action)
+            target = action_to_target(action,config.data)
             controller.last_action = action
+            target = controller.safety.limit_pd_target(controller.safety.limit_target(target), q, dq,
+                        config.stiffness,config.damping,14.)
             target_sdk = controller._to_sdk(controller.safety.limit_target(target))
             targets.append(target_sdk.copy())
             actual.append(data.qpos[pos].copy())
@@ -72,6 +82,7 @@ def simulate(config, row, friction, condim, joint_friction, seed_geometry='geom'
         data.ctrl[actuator] = torque
         mujoco.mj_step(model, data)
     return {
+        'lateral_command_mps': lateral_speed, 'action_step_mode':controller.action_step_mode,
         'sliding_friction': friction, 'foot_contact_dimension': condim,
         'joint_frictionloss_nm': joint_friction, 'initial_height_method': seed_geometry,
         'initial_height_m': float(initial[2]), 'displacement_world_xyz_m': (data.qpos[:3] - initial).tolist(),

@@ -14,7 +14,7 @@ from deploy.deploy_real.go2_commission import assess_keyboard
 
 
 def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_dynamics=False,
-             min_tracking_ratio=.5, key_schedule=None, motion_seconds=4):
+             min_tracking_ratio=.5, key_schedule=None, motion_seconds=4, walk_speed=.3, action_step_mode=None, continuous=False, exit_key="c", exit_time=45.):
     model = mujoco.MjModel.from_xml_path(str(ROOT / 'resources/robots/go2/mjcf/scene_flat.xml'))
     model.opt.timestep = .002
     if not model_dynamics:
@@ -33,7 +33,9 @@ def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_d
     for _ in range(1500):
         data.ctrl[actuator] = np.clip(40 * (q - data.qpos[pos]) - data.qvel[vel], -8, 8)
         mujoco.mj_step(model, data)
-    trial = validate_readiness(readiness, mode, config, manifest, motion_seconds)
+    if continuous and (mode != "all" or exit_key not in ("c","z") or not np.isfinite(exit_time) or exit_time < 9.):
+        raise ValueError("持续仿真要求all、C/Z退出及至少9秒退出时刻")
+    trial = validate_readiness(readiness, mode, config, manifest, None if continuous else motion_seconds, walk_speed, action_step_mode)
     last_tau = data.ctrl[actuator].copy()
 
     def state(now, tick):
@@ -57,8 +59,12 @@ def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_d
     rows = []
     commands = []
     active_keys = set()
+    limited_inferences = set()
+    max_requested_delta = 0.
+    max_applied_delta = 0.
     schedule = key_schedule or [(9., key)]
-    for tick in range(int(trial.duration / .002) + 1):
+    horizon = exit_time + 10. if continuous else trial.duration
+    for tick in range(int(horizon / .002) + 1):
         elapsed = tick * .002
         now = 1. + elapsed
         selected = next((item[1] for item in reversed(schedule) if elapsed >= item[0]), None)
@@ -68,7 +74,18 @@ def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_d
                 active_keys.add(selected)
         if stop_time <= elapsed < stop_time + .002:
             trial.feed_key('x', now)
+        if continuous and exit_time <= elapsed < exit_time + .002:
+            if exit_key == 'c':
+                trial.feed_key('c', now)
+            else:
+                trial.stop(now,'主终端Z请求停止')
         command = trial.output(now, state(now, tick))
+        processing = trial.controller.last_action_processing
+        if command.mode is Go2Mode.POLICY and processing:
+            max_requested_delta = max(max_requested_delta, processing['max_requested_delta'])
+            max_applied_delta = max(max_applied_delta, processing['max_applied_delta'])
+            if processing['limited_joints']:
+                limited_inferences.add(trial.inference_count)
         if trial.phase(now)[0] == 'policy':
             if start is None:
                 start = data.qpos[:2].copy()
@@ -91,12 +108,14 @@ def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_d
             rows.append({'time': now, 'mode':command.mode.value, 'reason':command.reason,
                          'joint_pos_sdk':data.qpos[pos].tolist(), 'joint_vel_sdk':data.qvel[vel].tolist(),
                          'quaternion_wxyz':data.qpos[3:7].tolist(), 'velocity_command':trial.controller.command.tolist(),
-                         'feedback':{'stand_profile':f'keyboard{int(trial.duration)}', 'test_elapsed':elapsed,
-                                     'keyboard_motion_budget_seconds':trial.keyboard_budget,
-                                     'keyboard_window_end_seconds':trial.keyboard_window_end,
+                         'feedback':{'stand_profile':'keyboard_continuous' if continuous else f'keyboard{int(trial.duration)}', 'test_elapsed':elapsed,
+                                     'keyboard_motion_budget_seconds':None if continuous else trial.keyboard_budget,
+                                     'keyboard_continuous':continuous, 'keyboard_normal_exit':trial.normal_exit,
+                                     'keyboard_window_end_seconds':None if continuous else trial.keyboard_window_end,
+                                     'policy_action_processing':trial.controller.last_action_processing,
                                      'keyboard_axis':'all', 'keyboard_event':trial.keyboard_event,
                                      'keyboard_forward_seconds':trial.keyboard_used,
-                                     'forward_speed_mps':.3, 'lateral_speed_mps':.3,
+                                     'forward_speed_mps':walk_speed, 'lateral_speed_mps':.3,
                                      'yaw_speed_rad_s':.3, 'turn_forward_speed_mps':.3}})
         last_tau = command.kp_sdk * (command.target_pos_sdk - data.qpos[pos]) - command.kd_sdk * data.qvel[vel]
         data.ctrl[actuator] = last_tau
@@ -110,11 +129,14 @@ def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_d
     residual = max(residual_speeds, default=float('inf'))
     flow_passed = (reason == '测试时长结束' and elapsed >= trial.duration
                    and residual < .02 and bool(zero_commands) and max(zero_commands) == 0.)
+    if continuous and exit_key == 'z':
+        flow_passed = reason == '主终端Z请求停止' and elapsed >= exit_time
     tracking_ratio = motion_distance / commanded_distance if commanded_distance > 0 else 0.
     # 旧1cm判据只能确定方向，不能证明侧移效果。此门槛是明确的电脑端效果判据。
     motion_passed = commanded_distance > 0 and tracking_ratio >= min_tracking_ratio
     log_assessment = assess_keyboard(rows, config) if mode == 'all' else None
-    command_checks = (bool(commands) and np.max(np.abs(commands)) <= .30001
+    command_checks = (bool(commands) and np.all(np.asarray(commands) <= np.asarray([walk_speed,.3,.3])+1e-5)
+                      and np.all(np.asarray(commands) >= -.30001)
                       and trial.keyboard_used <= trial.keyboard_budget+.06 and bool(zero_commands) and max(zero_commands) == 0.
                       and log_assessment.get('command_checks_passed',False)) if mode == 'all' else True
     if mode == 'all':
@@ -137,14 +159,23 @@ def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_d
             'settle_tracking_tolerance_rad': trial.settle_tracking_tolerance,
             'passes_previous_0_15_rad_criterion': error <= .15,
             'motion_budget_used_seconds': trial.keyboard_used,
-            'motion_budget_limit_seconds':trial.keyboard_budget, 'duration_seconds':trial.duration,
+            'motion_budget_limit_seconds':None if continuous else trial.keyboard_budget, 'duration_seconds':trial.duration if np.isfinite(trial.duration) else None,
+            'continuous':continuous, 'exit_key':exit_key if continuous else None, 'exit_time':exit_time if continuous else None,
+            'action_step_mode':trial.controller.action_step_mode, 'policy_joint_velocity_limits_sdk_rad_s':trial.policy_velocity_limits.tolist(), 'limited_inferences':len(limited_inferences),
+            'max_requested_action_delta':max_requested_delta,'max_applied_action_delta':max_applied_delta,
             'final_height_m': float(data.qpos[2]),
             'scope': '完整接管、策略、X归零及降低；流程按控制器自身保护评价，日志分析另核对真机卧倒姿态。不模拟退出后的一秒阻尼，不代表真机通过'}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--motion-seconds',type=int,choices=(4,10),default=4,help='统一模式累计运动预算')
+    parser.add_argument('--motion-seconds',type=int,choices=(4,10),default=None,help='统一模式累计运动预算')
+    parser.add_argument('--continuous',action='store_true',help='验证持续入口，模拟C正常降低或Z紧急终止')
+    parser.add_argument('--exit-key',choices=('c','z'),default='c')
+    parser.add_argument('--exit-time',type=float,default=45.,help='持续仿真退出时刻，默认45秒')
+    parser.add_argument('--action-step-mode',choices=('reject','limit'),default=None)
+    parser.add_argument('--walk-speed',type=float,choices=(.3,.5),default=.3,help='统一模式W纯前进速度')
+    parser.add_argument('--keys',nargs='+',choices=('w','s','a','d','q','e'),help='统一模式只检查指定单键；省略则包含切换场景')
     parser.add_argument('--unified', action='store_true', help='检查统一Q/W/E/A/S/D及跨方向切换')
     parser.add_argument('--initial-log', type=Path, help='可选：读取真实站姿记录第一行')
     parser.add_argument('--readiness', type=Path)
@@ -155,6 +186,13 @@ def main():
     parser.add_argument('--min-tracking-ratio', type=float, default=.5,
                         help='电脑端运动效果门槛：运动窗口内实际/指令距离，默认0.5；不是原厂标准')
     args = parser.parse_args()
+    if args.continuous and (not args.unified or args.motion_seconds is not None):
+        parser.error('--continuous需要--unified，并与--motion-seconds互斥')
+    if not np.isfinite(args.exit_time) or not 9. <= args.exit_time <= 120.:
+        parser.error('--exit-time范围为9～120秒，仅限制电脑端仿真')
+    args.motion_seconds = args.motion_seconds or 4
+    if (args.walk_speed != .3 or args.keys) and not args.unified:
+        parser.error('--walk-speed或--keys需要--unified')
     if args.motion_seconds != 4 and not args.unified:
         parser.error('--motion-seconds 10需要--unified')
     if args.stop_time is None:
@@ -169,15 +207,17 @@ def main():
     readiness = args.readiness or ROOT / manifest['readiness']['zero']['path']
     initial = json.loads(args.initial_log.read_text().splitlines()[0]) if args.initial_log else None
     if args.unified:
-        cases = [(key, [(9.,key)], args.stop_time) for key in ('w','s','a','d','q','e')]
-        if args.motion_seconds == 10:
+        cases = [(key, [(9.,key)], args.stop_time) for key in (args.keys or ('w','s','a','d','q','e'))]
+        if args.keys:
+            pass
+        elif args.motion_seconds == 10:
             cases += [('switch_w_a_q',[(9.,'w'),(12.,'a'),(15.,'q')],18.)]
         else:
             cases += [('switch_all', [(9.,'w'),(9.7,'a'),(10.4,'q'),(11.1,'s'),(11.8,'d'),(12.5,'e')],12.9),
                   ('reverse', [(9.,'w'),(9.8,'s'),(10.6,'w')],11.4),
                   ('turn_reverse', [(9.,'q'),(9.8,'e')],10.5)]
         reports = [simulate('all', name, config, manifest, readiness, initial, stop, args.model_dynamics,
-                            args.min_tracking_ratio, schedule, args.motion_seconds) for name, schedule, stop in cases]
+                            args.min_tracking_ratio, schedule, args.motion_seconds, args.walk_speed, args.action_step_mode, args.continuous, args.exit_key, args.exit_time) for name, schedule, stop in cases]
     else:
         reports = [simulate(mode, key, config, manifest, readiness, initial, args.stop_time, args.model_dynamics,
                             args.min_tracking_ratio)
@@ -186,7 +226,7 @@ def main():
               'command_checks_passed':all(row['command_checks_passed'] for row in reports),
               'motion_passed':all(row['motion_passed'] for row in reports), 'policy_sha256': sha256(config.policy_path), 'config_sha256': sha256(CONFIG),
               'initial_log': str(args.initial_log) if args.initial_log else None,
-              'stop_time': args.stop_time, 'motion_seconds':args.motion_seconds, 'cases': reports, 'passed': all(row['passed'] for row in reports)}
+              'stop_time': args.stop_time, 'motion_seconds':args.motion_seconds, 'walk_speed':args.walk_speed, 'action_step_mode':args.action_step_mode, 'cases': reports, 'passed': all(row['passed'] for row in reports)}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps(result, ensure_ascii=False, indent=2))

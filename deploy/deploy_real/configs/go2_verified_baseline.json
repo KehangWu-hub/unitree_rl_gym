@@ -1,5 +1,5 @@
 {
-  "name": "Go2 2026-10-11 short trials 14/16Nm",
+  "name": "Go2 v1.0 operator-accepted 2026-10-12 14/16Nm",
   "policy_path": "deploy/pre_train/go2/motion.pt",
   "policy_sha256": "a955b95e911e30f2db5d0435676c76dcf9b193a663adb5992a9b5abcb056773a",
   "config_path": "deploy/deploy_real/configs/go2.yaml",
@@ -76,5 +76,16 @@
         "later_lateral_keys": "rejected after shared budget exhausted"
       }
     }
+  },
+  "release_acceptance": {
+    "version": "v1.0",
+    "date": "2026-10-12",
+    "status": "operator_accepted",
+    "source": "现场操作者在本次会话确认：已经解决了，现在效果已经算验收成功了。",
+    "scope": "当前真机键盘控制版本的运动效果",
+    "manifest": "deploy/deploy_real/configs/go2_v1.0_manifest.json",
+    "latest_local_trial": "logs/go2_real/commission/go2_real_20261012_193348_1791804828237135162.jsonl",
+    "latest_trial_normal_exit": "C accepted; zero 2s, lower 5s, settle 2s, damping 1s; log completed",
+    "historical_fields_note": "verified_scope, not_verified, short_trial_status and unified_keyboard_status above describe the earlier short trials, not the current release acceptance."
   }
 }

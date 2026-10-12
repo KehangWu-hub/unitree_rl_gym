@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+import numpy as np
 from unittest.mock import patch
 
 from deploy.deploy_real import go2_keyboard as entry
@@ -78,7 +79,8 @@ class KeyboardEntryTest(unittest.TestCase):
 
     def test_offline_and_cancelled_start_never_run_controller(self):
         trial = SimpleNamespace(policy_pd_limit=14., torque_limit=16., duration=29., keyboard_window_end=20., keyboard_budget=4., lower_begin=22.,
-                                controller=SimpleNamespace(validate_policy=lambda: None))
+                                policy_velocity_limits=np.array([25.,25.,20.07]*4),
+                                controller=SimpleNamespace(validate_policy=lambda: None, action_step_limit=.64))
         manifest = {'name':'test','readiness':{'zero':{'path':'zero.jsonl'}}}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'baseline.json'; path.write_text(json.dumps(manifest))

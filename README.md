@@ -8,6 +8,8 @@
 
 [环境安装](doc/setup_zh.md) · [真机部署](deploy/deploy_real/README_GO2.zh.md)
 
+当前发布基线为 **v1.0**，已由现场操作者确认真机运动效果验收通过。版本范围、模型与配置摘要见 [v1.0 记录](doc/releases/v1.0.md)。
+
 | Isaac Gym | MuJoCo | 真机 |
 |:---:|:---:|:---:|
 | <img src="doc/images/go2-isaacgym.png" alt="本项目 Go2 策略在 Isaac Gym 中的回放" width="240" height="180"> | <img src="doc/images/go2-mujoco-preview.png" alt="Go2 在 MuJoCo 中的仿真画面" width="240" height="180"> | <img src="doc/images/go2-real-preview.jpg" alt="Go2 实体机器人" width="240" height="180"> |
@@ -111,9 +113,26 @@ python deploy/deploy_mujoco/deploy_go2.py \
 
 ### 真机部署
 
-真机控制使用 `go2_keyboard`，默认统一接收 Q/W/E/A/S/D，X 将速度归零，也保留单方向检查模式。每轮从原厂站稳开始，经过接管和短时策略运行后自动降低，统一模式默认累计运动预算为 4 秒，可用 `--motion-seconds 10` 选择 10 秒档。
+真机控制使用 `go2_keyboard`，默认统一接收 Q/W/E/A/S/D，X 将速度归零，也保留单方向检查模式。从原厂站稳接管后，统一模式默认持续运行，C 受控降低并退出，Z/Ctrl+C 或第二终端停止紧急阻尼退出；可用 `--motion-seconds 4` 或 `10` 选择自动归零和降低的短时检查。运动入口默认对合法动作做步长限幅，`--walk-speed 0.5` 可将 W 纯前进指令从默认 0.30m/s 调整为 0.50m/s。
 
 部署需要匹配当前模型与配置的站立、零速度前置记录；这些记录保存在本机，克隆仓库后需自行完成检查。连接、前置流程、运行命令及停止方法见 **[Go2 真机部署指南](deploy/deploy_real/README_GO2.zh.md)**。
+
+已激活 `unitree-rl` 环境且机器人原厂站稳时，运行：
+
+```bash
+python -m deploy.deploy_real.go2_keyboard --walk-speed 0.5 --run
+```
+
+| 按键 | 功能 |
+|---|---|
+| W / S | 前进 / 后退 |
+| A / D | 左移 / 右移 |
+| Q / E | 行进中左转 / 右转 |
+| X / 空格 | 停步，保持策略运行，可继续运动 |
+| C | 正常趴下并退出：归零 2 秒、降低 5 秒、稳定 2 秒、阻尼收尾 1 秒 |
+| Z / Ctrl+C | 紧急终止，立即进入阻尼并退出 |
+
+C 用于默认持续模式，按一次即可；退出过程中仍可按 Z 紧急终止。可选短时检查自动降低，方向切换无需先按 X。
 
 ## 测试
 

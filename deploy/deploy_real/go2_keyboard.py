@@ -30,8 +30,13 @@ def verify_baseline(config, manifest, config_path=CONFIG):
         raise ValueError('配置与已验证基线不一致；请先核对改动和验证记录')
 
 
-def validate_readiness(path, mode, config, manifest, motion_seconds=4):
-    if motion_seconds not in (4,10) or (motion_seconds != 4 and mode != "all"):
+def validate_readiness(path, mode, config, manifest, motion_seconds=None, walk_speed=.3, action_step_mode=None):
+    action_step_mode = commission.resolve_action_step_mode(action_step_mode, mode != "zero")
+    if walk_speed > .3 and action_step_mode != "limit":
+        raise ValueError("提高前进速度必须启用--action-step-mode limit")
+    if walk_speed not in (.3,.5) or (walk_speed != .3 and mode != "all"):
+        raise ValueError("W速度档仅用于all统一模式，允许0.30或0.50m/s")
+    if motion_seconds not in (None,4,10) or (motion_seconds == 10 and mode != "all"):
         raise ValueError("10秒运动档仅用于all统一模式")
     kind = 'stand' if mode == 'zero' else 'zero'
     rows = [json.loads(line) for line in Path(path).read_text(encoding='utf-8').splitlines() if line.strip()]
@@ -53,11 +58,16 @@ def validate_readiness(path, mode, config, manifest, motion_seconds=4):
                                   forward_speed=.4 if mode != 'zero' else .1,
                                   keyboard=mode != 'zero', keyboard_axis={'all':'all', 'walk-turn':'yaw', 'backward':'backward', 'lateral':'lateral'}.get(mode, 'forward'),
                                   yaw_speed=.3, turn_forward_speed=.3 if mode in ('all', 'walk-turn') else 0.,
-                                  keyboard_motion_seconds=motion_seconds if mode == 'all' else None)
+                                  keyboard_motion_seconds=motion_seconds if mode == 'all' else None, continuous=mode == 'all' and motion_seconds is None, walk_speed=walk_speed, action_step_mode=action_step_mode)
 
 
-def commission_arguments(mode, network, readiness, motion_seconds=4):
-    if motion_seconds not in (4,10) or (motion_seconds != 4 and mode != "all"):
+def commission_arguments(mode, network, readiness, motion_seconds=None, walk_speed=.3, action_step_mode=None):
+    action_step_mode = commission.resolve_action_step_mode(action_step_mode, mode != "zero")
+    if walk_speed > .3 and action_step_mode != "limit":
+        raise ValueError("提高前进速度必须启用--action-step-mode limit")
+    if walk_speed not in (.3,.5) or (walk_speed != .3 and mode != "all"):
+        raise ValueError("W速度档仅用于all统一模式，允许0.30或0.50m/s")
+    if motion_seconds not in (None,4,10) or (motion_seconds == 10 and mode != "all"):
         raise ValueError("10秒运动档仅用于all统一模式")
     args = [network, '--config', str(CONFIG),
             '--policy-check' if mode == 'zero' else '--forward-check', str(readiness),
@@ -66,42 +76,54 @@ def commission_arguments(mode, network, readiness, motion_seconds=4):
     if mode != 'zero':
         args += ['--keyboard', '--forward-speed', '0.4', '--keyboard-axis', {'all':'all', 'walk-turn':'yaw', 'backward':'backward', 'lateral':'lateral'}[mode],
                  '--yaw-speed', '0.3', '--turn-forward-speed', '0.3' if mode in ('all', 'walk-turn') else '0.0']
+    if mode != 'zero':
+        args += ['--action-step-mode', action_step_mode]
     if mode == 'all':
-        args += ['--keyboard-motion-seconds',str(motion_seconds)]
+        args += ['--walk-speed',str(walk_speed)]
+        args += ['--continuous'] if motion_seconds is None else ['--keyboard-motion-seconds',str(motion_seconds)]
     return args
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=('all', 'zero', 'walk-turn', 'backward', 'lateral'), default='all')
-    parser.add_argument('--motion-seconds',type=int,choices=(4,10),default=4,help='all统一模式累计运动预算，默认4秒')
+    parser.add_argument('--motion-seconds',type=int,choices=(4,10),default=None,help='可选短时运动预算；all默认持续运行至Z/Ctrl+C')
+    parser.add_argument('--action-step-mode',choices=('reject','limit'),default=None,help='运动模式默认limit；reject保留显式对照')
+    parser.add_argument('--walk-speed',type=float,choices=(.3,.5),default=.3,help='all模式W纯前进速度，其他方向不变')
     parser.add_argument('--network', default='eno1')
     parser.add_argument('--readiness', type=Path, help='覆盖本机已验证的前置JSONL路径')
     action = parser.add_mutually_exclusive_group()
     action.add_argument('--check', action='store_true', help='离线检查；也是缺省行为')
     action.add_argument('--run', action='store_true', help='在前台确认后启动真机流程')
     options = parser.parse_args(argv)
-    if options.motion_seconds != 4 and options.mode != 'all':
+    if options.walk_speed != .3 and options.mode != 'all':
+        parser.error('--walk-speed 0.5仅用于all统一模式')
+    if options.motion_seconds == 10 and options.mode != 'all':
         parser.error('--motion-seconds 10仅用于all统一模式')
     if options.network == 'lo' or not options.network.strip():
         parser.error('此入口仅用于实体网卡，不能使用lo')
     try:
+        options.action_step_mode = commission.resolve_action_step_mode(options.action_step_mode, options.mode != 'zero')
         manifest = json.loads(BASELINE.read_text(encoding='utf-8'))
         config = Go2RealConfig.load(CONFIG, str(ROOT))
         verify_baseline(config, manifest)
         kind = 'stand' if options.mode == 'zero' else 'zero'
         readiness = options.readiness or ROOT / manifest['readiness'][kind]['path']
-        trial = validate_readiness(readiness, options.mode, config, manifest, options.motion_seconds)
+        trial = validate_readiness(readiness, options.mode, config, manifest, options.motion_seconds, options.walk_speed, options.action_step_mode)
         trial.controller.validate_policy()
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         parser.error(f'离线核对失败：{error}。历史日志不随仓库分发；可用--readiness提供匹配记录。')
     print(f'基线：{manifest["name"]}；PD {trial.policy_pd_limit:g}Nm，反馈停止 {trial.torque_limit:g}Nm。', flush=True)
     if options.mode == 'all':
-        print(f'{trial.duration:g}秒流程：第8～{trial.keyboard_window_end:g}秒接受Q/W/E/A/S/D；累计运动最多{trial.keyboard_budget:g}秒，第{trial.lower_begin:g}秒开始降低。', flush=True)
-        print('W/S前后、A/D左右：0.30m/s；Q/E前进0.30m/s加左右转0.30rad/s。', flush=True)
-        print('最后方向键生效，换方向先归零再加速；X/空格归零，Z/Ctrl+C阻尼。', flush=True)
+        if options.motion_seconds is None:
+            print('持续控制：接管后第8秒开放按键，无累计运动预算或自动结束时间；C受控降低退出，Z/Ctrl+C紧急终止。', flush=True)
+        else:
+            print(f'{trial.duration:g}秒流程：第8～{trial.keyboard_window_end:g}秒接受Q/W/E/A/S/D；累计运动最多{trial.keyboard_budget:g}秒，第{trial.lower_begin:g}秒开始降低。', flush=True)
+        print(f'W前进{options.walk_speed:.2f}m/s；S后退、A/D左右0.30m/s；Q/E前进0.30m/s加左右转0.30rad/s。', flush=True)
+        if options.action_step_mode == 'limit':
+            print(f'动作单步限幅{trial.controller.action_step_limit:g}；关节速度逐关节取URDF与配置交集：{trial.policy_velocity_limits.tolist()} rad/s（SDK顺序）。', flush=True)
+        print('最后方向键生效，换方向先归零再加速；X/空格停走，C受控降低退出，Z/Ctrl+C紧急阻尼。', flush=True)
         print('看到按键窗口提示后再操作；松键最长0.6秒归零，请主动按X。', flush=True)
-        print('统一入口W与X已有短时现场确认；跨方向切换仍待验证。', flush=True)
     elif options.mode == 'walk-turn':
         print('29秒流程：5秒接管、2秒保持、1秒零速；第8～20秒接受Q/E；第22秒开始降低。', flush=True)
         print('Q/E：前进0.30m/s加左右转0.30rad/s；累计运动最多4秒。X/空格归零。', flush=True)
@@ -116,9 +138,9 @@ def main(argv=None):
     else:
         print('16秒流程：5秒接管、2秒保持、2秒零速度策略、5秒降低、2秒稳定。', flush=True)
         print('零速度策略也可能迈步或漂移；本模式X/空格直接停止并阻尼。', flush=True)
-    print('随后1秒阻尼；Z/Ctrl+C或第二终端停止进入阻尼。结束后不自动恢复normal。', flush=True)
+    print('Z/Ctrl+C或第二终端停止进入阻尼并退出；阻尼取消位置支撑，机身会下沉。', flush=True)
     print('第二终端：python -m deploy.deploy_real.go2_watchdog --stop --domain-id 0', flush=True)
-    arguments = commission_arguments(options.mode, options.network, readiness, options.motion_seconds)
+    arguments = commission_arguments(options.mode, options.network, readiness, options.motion_seconds, options.walk_speed, options.action_step_mode)
     if not options.run:
         print('离线检查通过；没有初始化DDS或发送电机命令。加--run才启动。', flush=True)
         return 0
@@ -130,7 +152,7 @@ def main(argv=None):
         return 0
     print('开始接管；暂时不要操作App。', flush=True)
     commission.run(commission.parse_args(arguments), config)
-    print('流程已退出；请现场确认卧倒和停止情况。日志正常结束不等于物理效果通过。', flush=True)
+    print('控制已退出；请现场确认机身停止情况。', flush=True)
     return 0
 
 

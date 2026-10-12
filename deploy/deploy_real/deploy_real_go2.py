@@ -10,6 +10,7 @@ import termios
 import threading
 import time
 import tty
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from enum import Enum
 
@@ -22,6 +23,18 @@ from deploy.common.go2_policy import action_to_target, build_observation, projec
 
 
 GO2_SERVO_MODE = 0x01  # Unitree Go2 low-level examples use PMSM/FOC mode 0x01.
+
+
+def model_joint_velocity_limits(config):
+    """Policy顺序；逐关节URDF上限与部署配置取交集，不以速度档选择。"""
+    path = os.path.join(LEGGED_GYM_ROOT_DIR, 'resources/robots/go2/urdf/go2.urdf')
+    joints = {joint.attrib['name']: joint for joint in ET.parse(path).getroot().findall('joint')}
+    configured = float(config.safety['max_joint_velocity'])
+    values = np.asarray([float(joints[name].find('limit').attrib['velocity'])
+                         for name in config.data['policy']['joint_names']], dtype=np.float64)
+    if values.shape != (12,) or not np.isfinite(values).all() or np.any(values <= 0) or not np.isfinite(configured) or configured <= 0:
+        raise ValueError('模型及配置关节速度上限必须为正有限数')
+    return np.minimum(values, configured)
 
 
 class KeyboardVelocity:
@@ -216,6 +229,7 @@ class Go2Safety:
         self.max_roll = float(config["max_roll"])
         self.max_pitch = float(config["max_pitch"])
         self.max_joint_velocity = float(config["max_joint_velocity"])
+        self.joint_velocity_limits = np.full(12, self.max_joint_velocity)
         self.max_action = float(config["max_action"])
         self.max_action_delta = float(config["max_action_delta"])
         self.torque_limit_ratio = float(config["torque_limit_ratio"])
@@ -248,7 +262,7 @@ class Go2Safety:
             return self._fail("机身姿态超过安全限制")
         if np.any(q < self.joint_lower - self.state_joint_margin) or np.any(q > self.joint_upper + self.state_joint_margin):
             return self._fail("关节位置超过安全限制")
-        if np.any(np.abs(dq) > self.max_joint_velocity):
+        if np.any(np.abs(dq) > self.joint_velocity_limits):
             return self._fail("关节速度超过安全限制")
         return SafetyResult(True)
 
@@ -273,6 +287,19 @@ class Go2Safety:
 
     def limit_target(self, target):
         return np.clip(_array(target, "target"), self.joint_lower, self.joint_upper)
+
+
+    def limit_pd_target(self, target, joint_pos, joint_vel, stiffness, damping, cap):
+        """将目标投影至角度与PD力矩允许区间的交集；无可行解时停止。"""
+        q, dq = _array(joint_pos, 'q'), _array(joint_vel, 'dq')
+        kp, kd = _array(stiffness, 'kp'), _array(damping, 'kd')
+        if not np.isfinite(cap) or cap <= 0 or np.any(kp <= 0):
+            raise ValueError('PD限幅参数无效')
+        lower = np.maximum(self.joint_lower, q + (-cap + kd * dq) / kp)
+        upper = np.minimum(self.joint_upper, q + (cap + kd * dq) / kp)
+        if np.any(lower > upper):
+            raise ValueError('角度与PD力矩约束无可行目标')
+        return np.clip(_array(target, 'target'), lower, upper)
 
 
 @dataclass
@@ -306,14 +333,21 @@ def quaternion_to_roll_pitch(quaternion_wxyz):
 class Go2Controller:
     """生成电机目标；不创建DDS发布器。"""
 
-    def __init__(self, config, policy=None):
+    def __init__(self, config, policy=None, action_step_mode="reject"):
         self.config = config
+        if action_step_mode not in ("reject", "limit"):
+            raise ValueError("action_step_mode必须为reject或limit")
+        self.action_step_mode = action_step_mode
+        self.last_action_processing = None
         self.policy = policy if policy is not None else torch.jit.load(config.policy_path, map_location="cpu")
         if hasattr(self.policy, "eval"):
             self.policy.eval()
         fsm_config = config.data["fsm"]
         self.fsm = Go2FSM(config.default_joint_pos, fsm_config["stand_duration"])
         self.safety = Go2Safety(config.safety, config.stiffness, config.damping, config.torque_limits)
+        self.safety.joint_velocity_limits = model_joint_velocity_limits(config)
+        self.policy_pd_limit = None
+        self.action_step_limit = self.safety.max_action_delta
         self.policy_target_mode = config.safety.get('policy_target_mode', 'reject')
         if self.policy_target_mode not in ('reject', 'clip'):
             raise ValueError('policy_target_mode必须为reject或clip')
@@ -383,6 +417,30 @@ class Go2Controller:
         action = output.detach().cpu().numpy().reshape(-1).astype(np.float32)
         return action, action_to_target(action, self.config.data)
 
+    def process_policy_action(self, action):
+        """约束有限且幅值合法的动作变化；幅值异常仍交由原保护拒绝。"""
+        raw = _array(action, "action")
+        if not np.isfinite(self.action_step_limit) or not 0 < self.action_step_limit <= self.safety.max_action_delta:
+            raise ValueError("动作步长限幅不得超出原安全阈值")
+        applied = raw.copy()
+        if self.action_step_mode == "limit" and np.all(np.abs(raw) <= self.safety.max_action):
+            previous = self.last_action.astype(np.float64)
+            delta = np.clip(raw.astype(np.float64) - previous,
+                            -self.action_step_limit, self.action_step_limit)
+            applied = (previous + delta).astype(np.float32)
+            # 转回float32可能向限值外舍入；朝前一动作退一ULP，维持原严格检查。
+            outside = np.abs(applied.astype(np.float64) - previous) > self.action_step_limit
+            applied[outside] = np.nextafter(applied[outside], self.last_action[outside])
+        self.last_action_processing = {
+            'mode': self.action_step_mode, 'step_limit': self.action_step_limit,
+            'previous_action': self.last_action.tolist(),
+            'raw_action': raw.tolist(), 'applied_action': applied.tolist(),
+            'limited_joints': np.flatnonzero(applied != raw).tolist(),
+            'max_requested_delta': float(np.max(np.abs(raw - self.last_action))),
+            'max_applied_delta': float(np.max(np.abs(applied - self.last_action))),
+        }
+        return applied
+
     def step(self, now, state):
         try:
             q, dq = self._policy_joint_state(state)
@@ -407,6 +465,8 @@ class Go2Controller:
         else:
             try:
                 action, target = self._policy_action(state, q, dq)
+                action = self.process_policy_action(action)
+                target = action_to_target(action, self.config.data)
                 raw_target = target.copy()
                 if self.policy_target_mode == 'clip':
                     target = self.safety.limit_target(target)
@@ -417,6 +477,9 @@ class Go2Controller:
                     'clipped_joints': np.flatnonzero(raw_target != target).tolist(),
                     'max_correction_rad': float(np.max(np.abs(raw_target - target))),
                 }
+                if self.policy_pd_limit is not None:
+                    target = self.safety.limit_pd_target(target, q, dq, self.config.stiffness,
+                                                       self.config.damping, self.policy_pd_limit)
                 result = self.safety.check_policy_command(action, self.last_action, target, q, dq)
                 if not result.safe:
                     violating = np.flatnonzero((target < self.safety.joint_lower) | (target > self.safety.joint_upper))

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
+from deploy.common.go2_policy import action_to_target
 from deploy.deploy_real.deploy_real_go2 import Go2Controller, Go2RealConfig, Go2State
 
 
@@ -15,7 +16,10 @@ def recorded_state(row):
 
 
 def replay(rows, config):
-    controller = Go2Controller(config)
+    modes = {(r.get('feedback',{}).get('policy_action_processing') or {}).get('mode','reject') for r in rows if r['mode']=='policy'}
+    if len(modes) != 1:
+        raise ValueError('动作处理模式缺失或不一致，拒绝回放')
+    controller = Go2Controller(config, action_step_mode=modes.pop())
     count, errors = 0, []
     for row in rows:
         if row['mode'] != 'policy':
@@ -29,6 +33,14 @@ def replay(rows, config):
         controller.set_velocity_command(row['velocity_command'])
         q, dq = controller._policy_joint_state(state)
         action, target = controller._policy_action(state, q, dq)
+        processing = row['feedback'].get('policy_action_processing') or {}
+        controller.action_step_limit = processing.get('step_limit',controller.safety.max_action_delta)
+        if not 0 < controller.action_step_limit <= controller.safety.max_action_delta:
+            raise ValueError('记录动作步长阈值无效')
+        action = controller.process_policy_action(action)
+        target = action_to_target(action, config.data)
+        if controller.policy_target_mode == "clip":
+            target = controller.safety.limit_target(target)
         # 初始接管混合阶段不参与误差比较；仍回放以重建last_action。
         if row['feedback']['test_elapsed'] >= 7 + row['feedback']['policy_entry_blend_seconds']:
             sdk = controller._to_sdk(target)
@@ -36,6 +48,9 @@ def replay(rows, config):
             cap = row['feedback']['policy_pd_limit_nm']
             pd = np.clip(20 * (sdk - qs) - .5 * dqs, -cap, cap)
             limited = qs + (pd + .5 * dqs) / 20
+            if row['feedback'].get('policy_limits_version') == 'per_joint_v1':
+                limited = controller._to_sdk(controller.safety.limit_pd_target(
+                    target, q, dq, config.stiffness, config.damping, cap))
             errors.append(float(np.max(np.abs(limited - np.asarray(row['target_pos_sdk'])))))
         controller.last_action = action
         count = n

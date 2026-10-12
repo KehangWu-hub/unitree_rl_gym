@@ -202,9 +202,9 @@ class Go2CommissionTest(unittest.TestCase):
         with self.assertRaises(ValueError): check_resting_for_restore(self.cfg,s,1.)
         with self.assertRaises(ValueError): check_resting_for_restore(self.cfg,self.prone(),1.2)
 
-    def test_walking_speed_bound_is_specific_to_policy_and_selected_speed(self):
+    def test_motion_velocity_uses_model_limits_while_stationary_checks_remain_strict(self):
         import torch
-        for forward, speed, dq, expected in ((True,.3,7.5,Go2Mode.POLICY),(True,.3,8.1,Go2Mode.DAMPING),(True,.1,2.1,Go2Mode.DAMPING),(False,.3,2.1,Go2Mode.DAMPING)):
+        for forward, speed, dq, expected in ((True,.3,7.5,Go2Mode.POLICY),(True,.3,8.1,Go2Mode.POLICY),(True,.1,2.1,Go2Mode.POLICY),(True,.3,20.1,Go2Mode.DAMPING),(False,.3,2.1,Go2Mode.DAMPING)):
             gate='assess_policy' if forward else 'assess_stand'
             result='zero_velocity_policy_trial_passed' if forward else 'stand_hold_lower_passed'
             with tempfile.NamedTemporaryFile(mode='w') as log, patch('deploy.deploy_real.go2_commission.'+gate,return_value={'result':result}):

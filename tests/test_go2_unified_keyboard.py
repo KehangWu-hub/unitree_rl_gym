@@ -22,12 +22,12 @@ class UnifiedKeyboardTest(unittest.TestCase):
     def setUpClass(cls):
         cls.config = Go2RealConfig.load(ROOT / 'deploy/deploy_real/configs/go2.yaml', str(ROOT))
 
-    def trial(self, motion_seconds=None):
+    def trial(self, motion_seconds=None, walk_speed=.3, continuous=False):
         with tempfile.NamedTemporaryFile(mode='w') as log, patch.object(commission, 'assess_policy', return_value={'result':'zero_velocity_policy_trial_passed'}):
             log.write('{"mode":"policy","feedback":{"policy_entry_blend_seconds":0.5,"policy_pd_limit_nm":14,"policy_feedback_limit_nm":16}}')
             log.flush()
             trial = commission.PolicyCheck(self.config, log.name, policy=lambda obs:torch.zeros((1,12)),
-                    forward=True, forward_speed=.4, keyboard=True, keyboard_axis='all', turn_forward_speed=.3, keyboard_motion_seconds=motion_seconds)
+                    forward=True, forward_speed=.4, keyboard=True, keyboard_axis='all', turn_forward_speed=.3, keyboard_motion_seconds=motion_seconds, walk_speed=walk_speed, action_step_mode=None, continuous=continuous)
         trial.started = 0.
         trial.velocity_profile(8.)
         return trial
@@ -40,6 +40,83 @@ class UnifiedKeyboardTest(unittest.TestCase):
             trial.feed_key(key, now)
             command = trial.velocity_profile(now)
         return command
+
+    def test_walk_speed_changes_only_w_with_same_slew_and_stop(self):
+        for key, target in [('w',[.5,0,0]),('s',[-.3,0,0]),('a',[0,.3,0]),('d',[0,-.3,0]),('q',[.3,0,.3]),('e',[.3,0,-.3])]:
+            with self.subTest(key=key):
+                trial=self.trial(10, .5)
+                self.assertAlmostEqual(trial.controller.action_step_limit,.64)
+                self.assertAlmostEqual(trial.policy_velocity_limit,20.07)
+                previous=np.zeros(3)
+                for i in range(1,31):
+                    now=8+i*.02;trial.feed_key(key,now);command=trial.velocity_profile(now)
+                    self.assertLessEqual(float(np.max(abs(command-previous))),.020001)
+                    previous=command
+                np.testing.assert_allclose(command,target,atol=1e-6)
+                trial.feed_key('x',8.61)
+                np.testing.assert_array_equal(trial.velocity_profile(8.62),0)
+                self.assertEqual((trial.policy_pd_limit,trial.torque_limit),(14,16))
+        trial=self.trial(10,.5);self.hold(trial,'w',8.,.6)
+        trial.feed_key('q',8.62)
+        np.testing.assert_array_equal(trial.velocity_profile(8.62),0)
+        np.testing.assert_allclose(self.hold(trial,'q',8.62),[.3,0,.3],atol=1e-6)
+
+    def test_walk_speed_is_explicit_all_only_and_cli_propagates(self):
+        with patch('sys.stdin.isatty',return_value=True):
+            args=commission.parse_args(entry.commission_arguments('all','eno1',Path('zero.jsonl'),10,.5,'limit'))
+        self.assertEqual(args.walk_speed,.5)
+        self.assertEqual(args.action_step_mode,'limit')
+        with self.assertRaisesRegex(ValueError,'action-step-mode'):
+            entry.commission_arguments('all','eno1',Path('zero.jsonl'),10,.5,'reject')
+        self.assertEqual(args.duration,35)
+        for mode in ('zero','walk-turn','backward','lateral'):
+            with self.subTest(mode=mode),self.assertRaises(ValueError):
+                entry.commission_arguments(mode,'eno1',Path('zero.jsonl'),4,.5)
+        for speed in (.2,.4,.6,float('nan')):
+            with self.subTest(speed=speed),self.assertRaises(ValueError):self.trial(10,speed)
+        config=copy.deepcopy(self.config);config.data['command_limits'][0]=.3
+        with patch.object(self,'config',config),self.assertRaisesRegex(ValueError,'配置指令上限'):
+            self.trial(10,.5)
+
+    def test_every_motion_entry_defaults_to_limit_independent_of_speed(self):
+        for mode in ('all', 'walk-turn', 'backward', 'lateral'):
+            with self.subTest(mode=mode), patch('sys.stdin.isatty', return_value=True):
+                args = commission.parse_args(entry.commission_arguments(mode, 'eno1', Path('zero.jsonl')))
+                self.assertEqual(args.action_step_mode, 'limit')
+        for speed in (.3, .5):
+            trial = self.trial(10, speed)
+            self.assertEqual(trial.controller.action_step_mode, 'limit')
+            np.testing.assert_allclose(trial.policy_velocity_limits, [25.,25.,20.07]*4)
+            self.assertEqual(trial.controller.policy_pd_limit, 14.)
+        with patch('sys.stdin.isatty', return_value=True):
+            args = commission.parse_args(entry.commission_arguments('zero', 'eno1', Path('stand.jsonl')))
+            self.assertEqual(args.action_step_mode, 'reject')
+
+    def test_model_velocity_ceiling_honors_lower_configuration(self):
+        config=copy.deepcopy(self.config)
+        self.assertAlmostEqual(commission.model_joint_velocity_ceiling(config),20.07)
+        config.data['safety']['max_joint_velocity']=12.
+        self.assertEqual(commission.model_joint_velocity_ceiling(config),12.)
+        config.data['safety']['max_joint_velocity']=float('nan')
+        with self.assertRaises(ValueError):commission.model_joint_velocity_ceiling(config)
+
+    def test_walk_speed_assessor_keeps_reverse_lateral_and_turn_limits(self):
+        rows=self.rows()
+        for r in rows:
+            r['feedback']['forward_speed_mps']=.5
+            r['feedback']['policy_action_processing']={'mode':'limit','step_limit':.64,'previous_action':[0.]*12,'raw_action':[0.]*12,'applied_action':[0.]*12}
+        # Replace the first moving command with the explicit pure-forward candidate.
+        idx=next(i for i,r in enumerate(rows) if r['velocity_command'][0]>0 and r['velocity_command'][2]==0)
+        rows[idx]['velocity_command']=[.5,0,0]
+        self.assertEqual(commission.assess_keyboard(rows,self.config)['result'],'keyboard_unified_and_zero_log_passed')
+        for command in ([.51,0,0],[-.5,0,0],[0,.5,0],[.5,0,.3],[.5,0,.5]):
+            bad=copy.deepcopy(rows);bad[idx]['velocity_command']=command
+            self.assertEqual(commission.assess_keyboard(bad,self.config)['result'],'inconclusive')
+        for field,value in [('step_limit',1.),('applied_action',[.7]*12),('raw_action',[4.1]*12)]:
+            bad=copy.deepcopy(rows);bad[idx]['feedback']['policy_action_processing'][field]=value
+            self.assertEqual(commission.assess_keyboard(bad,self.config)['result'],'inconclusive')
+        bad=copy.deepcopy(rows);bad[idx]['feedback']['forward_speed_mps']=.3
+        self.assertEqual(commission.assess_keyboard(bad,self.config)['result'],'inconclusive')
 
     def test_ten_second_profile_preserves_protection_and_shares_budget(self):
         trial=self.trial(10)
@@ -95,11 +172,105 @@ class UnifiedKeyboardTest(unittest.TestCase):
             args = commission.parse_args(entry.commission_arguments('all','eno1',Path('zero.jsonl')))
         trial = self.trial()
         self.assertEqual(args.keyboard_axis,'all')
-        self.assertEqual(args.duration,29)
+        self.assertTrue(args.continuous)
+        self.assertTrue(np.isinf(args.duration))
         self.assertEqual(args.publish_hz,500)
         self.assertEqual((trial.policy_pd_limit,trial.torque_limit),(14,16))
         self.assertEqual((trial.keyboard_window_end,trial.keyboard_budget,trial.keyboard_timeout),(20,4,.6))
         self.assertEqual(trial.settle_tracking_tolerance,.15)
+
+    def test_continuous_control_runs_beyond_old_deadlines_and_user_stop_latches(self):
+        from deploy.deploy_real.deploy_real_go2 import Go2State, Go2Mode
+        trial = self.trial(walk_speed=.5, continuous=True)
+        self.assertTrue(np.isinf(trial.keyboard_budget))
+        self.assertTrue(np.isinf(trial.duration))
+        q = self.config.default_joint_pos[self.config.sdk_to_policy].copy()
+        def state(now):
+            st = Go2State(now,np.array([1.,0,0,0]),np.zeros(3),q.copy(),np.zeros(12))
+            st.feedback = {'joint_tau_est_sdk':[0.]*12,'state_tick':int(now*500)}
+            return st
+        trial.controller.request_fix_stand(0., state(0.))
+        trial.hold_samples=50; trial.hold_first=6.; trial.hold_last=6.9
+        for i in range(26001):
+            now=8.+i*.002
+            if i%10==0:
+                trial.feed_key('w' if now<35. else 'a' if now<45. else 'q',now)
+            command = trial.output(now,state(now))
+            self.assertEqual(command.mode,Go2Mode.POLICY,command.reason)
+        self.assertGreater(trial.keyboard_used,50.)
+        trial.feed_key('x',60.001)
+        trial.output(60.02,state(60.02))
+        np.testing.assert_array_equal(trial.controller.command,0.)
+        trial.feed_key('s',60.021)
+        trial.output(60.022,state(60.022))
+        self.assertTrue(trial.keyboard_event['accepted'])
+        trial.stop(60.03,'主终端Z请求停止')
+        self.assertEqual(trial.output(60.032,state(60.032)).mode,Go2Mode.DAMPING)
+        trial.feed_key('w',60.04)
+        self.assertEqual(trial.output(60.042,state(60.042)).mode,Go2Mode.DAMPING)
+
+    def test_c_zeroes_then_lowers_once_and_z_can_interrupt(self):
+        from deploy.deploy_real.deploy_real_go2 import Go2State, Go2Mode
+        limited=self.trial(4);limited.policy_command=object()
+        self.assertFalse(limited.request_normal_exit(9.))
+        trial=self.trial(walk_speed=.5,continuous=True)
+        q=self.config.default_joint_pos[self.config.sdk_to_policy].copy()
+        def state(now,q_value=q):
+            st=Go2State(now,np.array([1.,0,0,0]),np.zeros(3),q_value.copy(),np.zeros(12))
+            st.feedback={'joint_tau_est_sdk':[0.]*12,'state_tick':int(now*500)}
+            return st
+        trial.controller.request_fix_stand(0.,state(0.));trial.hold_samples=50;trial.hold_first=6.;trial.hold_last=6.9
+        trial.output(8.,state(8.))
+        trial.feed_keys(['c','w'],8.001)
+        self.assertIsNotNone(trial.normal_exit)
+        self.assertEqual(trial.lower_begin,10.001)
+        trial.output(8.02,state(8.02))
+        np.testing.assert_array_equal(trial.controller.command,0.)
+        duration=trial.duration
+        trial.feed_key('c',8.021);trial.feed_key('a',8.022)
+        self.assertEqual(trial.duration,duration)
+        self.assertFalse(trial.keyboard_event['accepted'])
+        now=8.022
+        while now<trial.duration+.01:
+            now+=.002
+            actual=q if now<trial.lower_begin or trial.exit_start is None else trial.profile(now)[0]
+            command=trial.output(now,state(now,actual))
+        self.assertEqual(command.mode,Go2Mode.DAMPING)
+        self.assertEqual(trial.reason,'测试时长结束')
+        # 正常降低可随时被紧急停止覆盖。
+        trial=self.trial(continuous=True);trial.policy_command=object()
+        self.assertTrue(trial.request_normal_exit(9.))
+        trial.stop(9.1,'主终端Z请求停止')
+        self.assertEqual(trial.output(9.102,state(9.102)).mode,Go2Mode.DAMPING)
+
+    def test_continuous_cli_propagates_and_rejects_conflicting_budget(self):
+        args_list=entry.commission_arguments('all','eno1',Path('zero.jsonl'),walk_speed=.5)
+        with patch('sys.stdin.isatty',return_value=True):
+            args=commission.parse_args(args_list)
+        self.assertTrue(args.continuous)
+        self.assertIsNone(args.keyboard_motion_seconds)
+        for extra in (['--keyboard-motion-seconds','10'],['--duration','35']):
+            with contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+                commission.parse_args(args_list+extra)
+        with self.assertRaises(ValueError):self.trial(10,continuous=True)
+
+    def test_continuous_log_requires_manual_exit_and_does_not_claim_lowering(self):
+        rows=self.rows()
+        for r in rows:
+            r['feedback'].update(stand_profile='keyboard_continuous',keyboard_continuous=True,
+                 keyboard_motion_budget_seconds=None,keyboard_window_end_seconds=None)
+        rows[-1]['reason']='主终端Z请求停止'
+        result=commission.assess_keyboard(rows,self.config)
+        self.assertEqual(result['result'],'keyboard_continuous_manual_stop_log_passed')
+        self.assertFalse(result['physical_translation_and_stop_confirmed'])
+        self.assertTrue(result['active_x_log_confirmed'])
+        for r in rows:
+            if (r['feedback'].get('keyboard_event') or {}).get('key')=='x':
+                r['feedback'].pop('keyboard_event')
+        self.assertEqual(commission.assess_keyboard(rows,self.config)['result'],'keyboard_continuous_manual_stop_log_passed')
+        for reason in ('测试时长结束','策略试跑姿态超限','主程序心跳超时'):
+            bad=copy.deepcopy(rows);bad[-1]['reason']=reason
+            self.assertEqual(commission.assess_keyboard(bad,self.config)['result'],'inconclusive')
 
     def test_all_keys_have_expected_direction_and_qe_keep_forward_component(self):
         for key,target in [('w',[.3,0,0]),('s',[-.3,0,0]),('a',[0,.3,0]),('d',[0,-.3,0]),('q',[.3,0,.3]),('e',[.3,0,-.3])]:

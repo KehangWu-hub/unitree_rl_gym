@@ -19,7 +19,7 @@ import numpy as np
 from legged_gym import LEGGED_GYM_ROOT_DIR
 from deploy.deploy_real.deploy_real_go2 import (
     Go2Command, Go2Controller, Go2DDSTransport, Go2Mode, Go2RealConfig, Go2Recorder,
-    KeyboardVelocity, TerminalKeys, _array, quaternion_to_roll_pitch,
+    KeyboardVelocity, TerminalKeys, _array, quaternion_to_roll_pitch, model_joint_velocity_limits,
 )
 from deploy.deploy_real.go2_watchdog import COMMAND_TIMEOUT, default_socket, request
 
@@ -142,12 +142,43 @@ def check_resting_for_restore(config, state, now):
     q, dq = _array(state.joint_pos_sdk, 'q'), _array(state.joint_vel_sdk, 'dq')
     roll, pitch = quaternion_to_roll_pitch(state.quaternion_wxyz)
     limbs = q[config.policy_to_sdk].reshape(4, 3)
-    if (max(abs(roll),abs(pitch)) > .2 or np.max(np.abs(dq)) > .2
-            or np.any(np.abs(limbs[:,0]) > .7)
-            or np.any(limbs[:,1] < .8) or np.any(limbs[:,1] > 1.6)
-            or np.any(limbs[:,2] < -2.9) or np.any(limbs[:,2] > -2.4)):
-        raise ValueError('恢复前未确认静止低姿态；请核对现场状态')
+    failures = []
+    if max(abs(roll),abs(pitch)) > .2:
+        failures.append(f'倾角roll={roll:.3f},pitch={pitch:.3f}rad，要求绝对值<=0.2')
+    if np.max(np.abs(dq)) > .2:
+        failures.append(f'关节速度峰值={np.max(np.abs(dq)):.3f}rad/s，要求<=0.2')
+    for index, name in enumerate(config.data['policy']['joint_names']):
+        leg, joint = divmod(index,3)
+        value = limbs[leg,joint]
+        lower, upper = ((-.7,.7),(.8,1.6),(-2.9,-2.4))[joint]
+        if not lower <= value <= upper:
+            failures.append(f'{name}={value:.3f}rad，低姿态要求[{lower:g},{upper:g}]')
+    if failures:
+        raise ValueError('恢复前未确认静止低姿态：'+'；'.join(failures))
     return q, dq
+
+
+def wait_resting_for_restore(config, reader, stable_seconds=1., timeout=15., clock=None, sleep=None):
+    """仅订阅状态，等待连续静止低姿态，不切模式、不发送控制命令。"""
+    clock = clock or time.monotonic
+    sleep = sleep or time.sleep
+    deadline = clock() + timeout
+    stable_since = None
+    last_error = '尚未收到有效状态'
+    while True:
+        state = reader.snapshot()
+        now = clock()  # 必须在复制状态之后读取时钟。
+        try:
+            check_resting_for_restore(config,state,now)
+            stable_since = now if stable_since is None else stable_since
+            if now - stable_since >= stable_seconds:
+                return state
+        except ValueError as error:
+            stable_since = None
+            last_error = str(error)
+        if now >= deadline:
+            raise ValueError(f'等待连续{stable_seconds:g}秒静止低姿态超时；原厂模式未恢复。最后未通过项：{last_error}')
+        sleep(config.control_dt)
 
 
 def check_standing(config, state, now):
@@ -437,8 +468,25 @@ class StandCheck:
         return Go2Command(Go2Mode.DAMPING, np.zeros(12), np.zeros(12), np.full(12, 3.), self.reason)
 
 
-def keyboard_timing(forward_speed, keyboard_axis, motion_seconds=None):
+def model_joint_velocity_ceiling(config):
+    """兼容旧诊断脚本的摘要；实际检查使用逐关节上限。"""
+    return float(np.min(model_joint_velocity_limits(config)))
+
+
+def resolve_action_step_mode(mode, moving):
+    if mode is None:
+        return 'limit' if moving else 'reject'
+    if mode not in ('reject', 'limit') or (mode == 'limit' and not moving):
+        raise ValueError('动作步长限幅仅用于运动策略流程')
+    return mode
+
+
+def keyboard_timing(forward_speed, keyboard_axis, motion_seconds=None, continuous=False):
     """输入窗口末尾、累计运动预算、控制总时长；退出后另发一秒阻尼。"""
+    if continuous:
+        if keyboard_axis != 'all' or forward_speed != .4 or motion_seconds is not None:
+            raise ValueError('持续控制仅用于all，不能同时指定运动预算')
+        return float('inf'), float('inf'), float('inf')
     if motion_seconds is not None:
         if keyboard_axis != 'all' or forward_speed != .4 or motion_seconds not in (4, 10):
             raise ValueError('运动时长选择仅允许all统一键盘的4秒或10秒档')
@@ -448,9 +496,11 @@ def keyboard_timing(forward_speed, keyboard_axis, motion_seconds=None):
 
 
 class PolicyCheck(StandCheck):
-    """原厂站姿接管，稳定保持后限时运行策略，再降低；不能续跑。"""
+    """原厂站姿接管；持续交互或短时策略检查共用同一保护链路。"""
 
-    def __init__(self, config, readiness_log, policy=None, forward=False, forward_speed=.1, keyboard=False, keyboard_axis="forward", yaw_speed=.3, turn_forward_speed=0., keyboard_motion_seconds=None):
+    def __init__(self, config, readiness_log, policy=None, forward=False, forward_speed=.1, keyboard=False, keyboard_axis="forward", yaw_speed=.3, turn_forward_speed=0., keyboard_motion_seconds=None, walk_speed=.3, action_step_mode=None, continuous=False):
+        if continuous and not keyboard:
+            raise ValueError("持续控制需要键盘运动模式")
         if forward_speed not in (.1, .3, .4):
             raise ValueError('前进速度只允许0.10、0.30或键盘0.40m/s限时档')
         if (keyboard and (not forward or forward_speed not in (.3, .4))) or (forward_speed == .4 and not keyboard):
@@ -465,13 +515,22 @@ class PolicyCheck(StandCheck):
             raise ValueError("统一键盘固定0.30m/s平移与0.30rad/s行进转向")
         if keyboard_motion_seconds is not None and not keyboard:
             raise ValueError('运动时长选择需要统一键盘流程')
+        if walk_speed not in (.3, .5) or (walk_speed != .3 and (not keyboard or keyboard_axis != "all")):
+            raise ValueError("W前进速度仅允许统一键盘0.30或0.50m/s")
+        if walk_speed > float(config.data["command_limits"][0]):
+            raise ValueError("W前进速度超过配置指令上限")
+        action_step_mode = resolve_action_step_mode(action_step_mode, forward)
+        if walk_speed > .3 and action_step_mode != "limit":
+            raise ValueError("提高前进速度必须启用动作步长限幅，禁止使用旧的直接拒绝模式")
+        self.walk_speed = walk_speed
         self.turn_forward_speed = turn_forward_speed
         self.yaw_speed = yaw_speed
         self.keyboard_axis = keyboard_axis
         self.keyboard_axis_index = {"forward":0,"backward":0,"lateral":1,"yaw":2,"all":None}[keyboard_axis]
         self.keyboard_keys = {"forward":("w",),"backward":("s",),"lateral":("a","d"),"yaw":("q","e"),"all":("q","w","e","a","s","d")}[keyboard_axis]
         self.keyboard = keyboard
-        self.keyboard_window_end, self.keyboard_budget, _ = keyboard_timing(forward_speed, keyboard_axis, keyboard_motion_seconds)
+        self.continuous = continuous
+        self.keyboard_window_end, self.keyboard_budget, _ = keyboard_timing(forward_speed, keyboard_axis, keyboard_motion_seconds, continuous)
         self.keyboard_timeout = .6 if forward_speed == .4 else .25
         self.keyboard_input = KeyboardVelocity([.3 if keyboard_axis in ('backward', 'all') else forward_speed,.30,yaw_speed], timeout=self.keyboard_timeout) if keyboard else None
         self.keyboard_used = 0.
@@ -482,7 +541,10 @@ class PolicyCheck(StandCheck):
         self.keyboard_event = None
         self.keyboard_sequence = 0
         self.forward_speed = forward_speed
-        self.policy_velocity_limit = 8. if forward and forward_speed >= .3 else 2.
+        self.policy_velocity_limits = (model_joint_velocity_limits(config)[config.sdk_to_policy]
+                                       if forward else np.full(12, 2.))
+        self.policy_velocity_limit = float(np.min(self.policy_velocity_limits))  # 历史摘要字段
+
         self.entry_blend_seconds = .5
         with open(config.policy_path, 'rb') as stream:
             self.policy_sha256 = hashlib.sha256(stream.read()).hexdigest()
@@ -515,7 +577,11 @@ class PolicyCheck(StandCheck):
         self.lower_begin = self.keyboard_window_end + 2. if keyboard else 12. if forward else 9.
         self.settle_begin = self.lower_begin + 5.
         self.duration = self.settle_begin + 2.
-        self.controller = Go2Controller(config, policy=policy)
+        self.controller = Go2Controller(config, policy=policy, action_step_mode=action_step_mode)
+        self.controller.policy_pd_limit = self.policy_pd_limit
+        if action_step_mode == "limit":
+            self.controller.action_step_limit = min(self.controller.safety.max_action_delta,
+                8. * config.control_dt / float(config.data["actions"]["scale"]))
         self.controller.validate_policy()  # 加载与首轮推理在DDS初始化/释放原厂模式前完成。
         self.controller.set_velocity_command(np.zeros(3))
         self.policy_command = None
@@ -523,6 +589,7 @@ class PolicyCheck(StandCheck):
         self.policy_time = None
         self.exit_start = None
         self.inference_count = 0
+        self.normal_exit = None
 
     def arm(self, now, state):
         super().arm(now, state)
@@ -551,16 +618,33 @@ class PolicyCheck(StandCheck):
 
     def limit_policy_pd(self, command, state):
         q, dq = _array(state.joint_pos_sdk, 'q'), _array(state.joint_vel_sdk, 'dq')
-        pd = command.kp_sdk * (command.target_pos_sdk - q) - command.kd_sdk * dq
-        limited = np.clip(pd, -self.policy_pd_limit, self.policy_pd_limit)
-        target = q + (limited + command.kd_sdk * dq) / command.kp_sdk
-        if np.any(target < self.lower) or np.any(target > self.upper):
-            raise ValueError('PD限幅后的策略目标超出模型范围')
-        return Go2Command(Go2Mode.POLICY, target, command.kp_sdk, command.kd_sdk)
+        order = self.config.policy_to_sdk
+        target = self.controller.safety.limit_pd_target(
+            command.target_pos_sdk[order], q[order], dq[order], command.kp_sdk[order],
+            command.kd_sdk[order], self.policy_pd_limit)
+        return Go2Command(Go2Mode.POLICY, self.controller._to_sdk(target), command.kp_sdk, command.kd_sdk)
+
+    def request_normal_exit(self, now):
+        """归零两秒后沿用5秒降低、2秒稳定，再一秒阻尼退出。"""
+        if not self.continuous or self.normal_exit is not None:
+            return False
+        if self.reason or self.started is None or self.phase(now)[0] != 'policy' or self.policy_command is None:
+            return False
+        elapsed = now - self.started
+        self.keyboard_input.feed('x', now)
+        self.keyboard_command.fill(0.)
+        self.keyboard_velocity = 0.
+        self.keyboard_window_end = elapsed
+        self.lower_begin = elapsed + 2.
+        self.settle_begin = self.lower_begin + 5.
+        self.duration = self.settle_begin + 2.
+        self.normal_exit = {'key':'c', 'elapsed':elapsed, 'lower_begin':self.lower_begin,
+                            'duration':self.duration}
+        return True
 
     def feed_keys(self, keys, now):
         # 同一次终端读取中，归零键优先于方向键和自动重复输入。
-        stop_key = next((key for key in keys if key in ('x', ' ')), None)
+        stop_key = 'c' if 'c' in keys else next((key for key in keys if key in ('x', ' ')), None)
         if stop_key is not None:
             self.feed_key(stop_key, now)
         else:
@@ -568,10 +652,21 @@ class PolicyCheck(StandCheck):
                 self.feed_key(key, now)
 
     def feed_key(self, key, now):
-        if not self.keyboard or key not in (*self.keyboard_keys,'x',' '):
+        if not self.keyboard or key not in (*self.keyboard_keys,'x',' ','c'):
             return
         elapsed = None if self.started is None else now - self.started
         self.account_keyboard_budget(now)
+        if key == 'c':
+            accepted = self.request_normal_exit(now)
+            self.keyboard_sequence += 1
+            self.keyboard_event = {'key':key,'elapsed':elapsed,'sequence':self.keyboard_sequence,
+                                   'accepted':accepted,'reason':'' if accepted else 'normal_exit_unavailable'}
+            return
+        if self.normal_exit is not None:
+            self.keyboard_sequence += 1
+            self.keyboard_event = {'key':key,'elapsed':elapsed,'sequence':self.keyboard_sequence,
+                                   'accepted':False,'reason':'normal_exit_in_progress'}
+            return
         if key in self.keyboard_keys and (elapsed is None or not 8 <= elapsed < self.keyboard_window_end or self.keyboard_used >= self.keyboard_budget):
             self.keyboard_sequence += 1
             self.keyboard_event = {'key':key,'elapsed':elapsed,'sequence':self.keyboard_sequence,'accepted':False,
@@ -614,12 +709,15 @@ class PolicyCheck(StandCheck):
         target = self.keyboard_input.sample(now) if 8 <= elapsed < self.keyboard_window_end and self.keyboard_used < self.keyboard_budget else np.zeros(3)
         if target[2]:
             target[0] = self.turn_forward_speed * abs(target[2]) / self.yaw_speed
+        elif target[0] > 0:
+            target[0] = self.walk_speed
         # 每次只执行最后一个方向键；换方向先归零一个策略周期，再重新加速。
         if not np.any(target) or (np.any(self.keyboard_command) and
                 not np.array_equal(np.sign(target), np.sign(self.keyboard_command))):
             self.keyboard_command.fill(0.)
         else:
-            ratio = min(1., (self.keyboard_velocity + dt) / .3)
+            magnitude = self.walk_speed if target[0] > 0 and not target[2] else .3
+            ratio = min(1., (self.keyboard_velocity + dt) / magnitude)
             self.keyboard_command = np.asarray(target * ratio, dtype=np.float32)
         self.keyboard_velocity = float(np.max(np.abs(self.keyboard_command)))
         if self.keyboard_command[0] < 0 or self.keyboard_command[1] != 0:
@@ -660,8 +758,11 @@ class PolicyCheck(StandCheck):
                 roll, pitch = quaternion_to_roll_pitch(state.quaternion_wxyz)
                 if max(abs(roll), abs(pitch)) > .35:
                     raise ValueError('策略试跑姿态超限')
-                if np.max(np.abs(dq)) > self.policy_velocity_limit:
-                    raise ValueError(f'策略关节速度{np.max(np.abs(dq)):.3f}rad/s超过{self.policy_velocity_limit:g}rad/s')
+                exceeded = np.flatnonzero(np.abs(dq) > self.policy_velocity_limits)
+                if exceeded.size:
+                    joint = int(exceeded[0])
+                    name = self.config.data['policy']['sdk_joint_names'][joint]
+                    raise ValueError(f'策略关节速度{name}={dq[joint]:.3f}rad/s超过{self.policy_velocity_limits[joint]:g}rad/s')
                 if np.any(q < self.lower - .02) or np.any(q > self.upper + .02):
                     raise ValueError('策略试跑实际关节超限')
                 if self.policy_command is None:
@@ -896,24 +997,32 @@ def assess_keyboard(rows, config):
     fault=next((r.get('feedback',{}).get('policy_fault') for r in rows if r.get('feedback',{}).get('policy_fault')),None)
     if fault is not None: result['policy_fault']=fault
     try:
-        if any(r.get('reason') not in ('','测试时长结束') for r in rows):
-            raise ValueError('键盘试跑提前停止或发生安全故障')
         profile=next((r.get('feedback',{}).get('stand_profile') for r in rows if r.get('mode')=='policy'),None)
+        continuous = profile == 'keyboard_continuous'
+        allowed_reasons = ('', '主终端Z请求停止', '主终端Ctrl+C请求停止', '第二终端请求停止', '收到停止信号', '测试时长结束') if continuous else ('', '测试时长结束')
+        if any(r.get('reason') not in allowed_reasons for r in rows):
+            raise ValueError('键盘控制发生故障或非预期停止')
         profiles={'keyboard23':(14.,2.,.3,23.), 'keyboard29':(20.,4.,.4,29.), 'keyboard35':(26.,10.,.4,35.)}
-        if profile not in profiles:
+        if continuous:
+            window_end, budget, speed, duration = float('inf'), float('inf'), .4, float('inf')
+        elif profile in profiles:
+            window_end,budget,speed,duration=profiles[profile]
+        else:
             raise ValueError('未知键盘时长档位')
-        window_end,budget,speed,duration=profiles[profile]
         policy=[r for r in rows if r.get('mode')=='policy']
-        if not policy or policy[-1]['time']-policy[0]['time']<window_end-5.2:
+        if not policy or (not continuous and policy[-1]['time']-policy[0]['time']<window_end-5.2):
             raise ValueError('缺少完整键盘策略阶段')
         axis=policy[0]['feedback'].get('keyboard_axis','forward')
-        if profile == 'keyboard35' and axis != 'all':
-            raise ValueError('10秒运动预算仅允许统一键盘')
+        if (profile == 'keyboard35' or continuous) and axis != 'all':
+            raise ValueError('持续/10秒运动仅允许统一键盘')
         for row in policy:
             f=row['feedback']
+            expected_budget = None if continuous else budget
+            expected_window = None if continuous else window_end
             if (f.get('stand_profile') != profile or f.get('keyboard_axis','forward') != axis
-                    or f.get('keyboard_motion_budget_seconds',budget) != budget
-                    or f.get('keyboard_window_end_seconds',window_end) != window_end):
+                    or f.get('keyboard_motion_budget_seconds',expected_budget) != expected_budget
+                    or f.get('keyboard_window_end_seconds',expected_window) != expected_window
+                    or (continuous and f.get('keyboard_continuous') is not True)):
                 raise ValueError('键盘时长/运动预算标记不一致')
         index={'forward':0,'backward':0,'lateral':1,'yaw':2,'all':None}[axis]
         keys={'forward':('w',),'backward':('s',),'lateral':('a','d'),'yaw':('q','e'),'all':('q','w','e','a','s','d')}[axis]
@@ -925,9 +1034,29 @@ def assess_keyboard(rows, config):
         turn_forward=policy[0]['feedback'].get('turn_forward_speed_mps',0.)
         if turn_forward not in (0.,.3) or (turn_forward and axis not in ('yaw','all')):
             raise ValueError('未知边走边转配置')
-        if axis == 'all' and (yaw_limit != .3 or abs(lateral_limit-.3)>1e-6 or turn_forward != .3
-                or not np.isclose(policy[0]['feedback'].get('forward_speed_mps',float('nan')), .3, atol=1e-6, rtol=0)):
+        walk_speed = policy[0]['feedback'].get('forward_speed_mps',float('nan'))
+        if axis == 'all' and (not any(np.isclose(walk_speed,x,atol=1e-6,rtol=0) for x in (.3,.5))
+                or any(not np.isclose(r['feedback'].get('forward_speed_mps',float('nan')),walk_speed,atol=1e-6,rtol=0) for r in policy)):
+            raise ValueError('统一键盘W速度标记无效或不一致')
+        if axis == 'all' and (yaw_limit != .3 or abs(lateral_limit-.3)>1e-6 or turn_forward != .3):
             raise ValueError('统一键盘限幅配置不符')
+        action_modes = {(r['feedback'].get('policy_action_processing') or {}).get('mode','reject') for r in policy}
+        if len(action_modes) != 1 or not action_modes <= {'reject','limit'}:
+            raise ValueError('动作步长处理模式不一致')
+        if axis == 'all' and walk_speed > .3+1e-6 and action_modes != {'limit'}:
+            raise ValueError('提高前进速度必须记录动作步长限幅')
+        if action_modes == {'limit'}:
+            ceiling = min(float(config.safety['max_action_delta']), 8.*config.control_dt/float(config.data['actions']['scale']))
+            for row in policy:
+                processing = row['feedback']['policy_action_processing']
+                step_limit = processing['step_limit']
+                previous = _array(processing['previous_action'],'previous_action')
+                applied = _array(processing['applied_action'],'applied_action')
+                raw = _array(processing['raw_action'],'raw_action')
+                if (not 0 < step_limit <= ceiling+1e-7 or np.max(np.abs(applied-previous)) > step_limit+1e-6
+                        or np.max(np.abs(raw)) > config.safety['max_action']
+                        or np.max(np.abs(applied)) > config.safety['max_action']):
+                    raise ValueError('动作步长限幅记录越界')
         def moving_command(row):
             v = np.asarray(row['velocity_command'])
             return bool(np.any(np.abs(v)>1e-4)) if axis == 'all' else abs(v[index])>1e-4
@@ -940,7 +1069,8 @@ def assess_keyboard(rows, config):
             if axis == 'all':
                 translation = v[2] == 0 and (v[0] == 0 or v[1] == 0)
                 turning = v[1] == 0 and np.isclose(v[0], abs(v[2]), atol=1e-6, rtol=0)
-                valid = np.max(np.abs(v)) <= .3+1e-5 and (translation or turning)
+                valid = ((translation and -.3-1e-5 <= v[0] <= walk_speed+1e-5 and abs(v[1]) <= .3+1e-5)
+                         or (turning and np.max(np.abs(v)) <= .3+1e-5))
             else:
                 expected=np.zeros(3);expected[index]=v[index]
                 if turn_forward: expected[0]=turn_forward*abs(v[index])/yaw_limit
@@ -954,13 +1084,24 @@ def assess_keyboard(rows, config):
                 raise ValueError('累计运动超出预算加调度余量')
         events={r['feedback']['keyboard_event']['sequence']:r['feedback']['keyboard_event'] for r in policy if r['feedback'].get('keyboard_event') and r['feedback']['keyboard_event'].get('accepted',True)}
         if not any(e['key'] in keys for e in events.values()): raise ValueError('缺少方向键输入')
-        if not any(e['key'] in ('x',' ') and e['elapsed']>moving[0]['feedback']['test_elapsed'] for e in events.values()):
+        if not continuous and not any(e['key'] in ('x',' ') and e['elapsed']>moving[0]['feedback']['test_elapsed'] for e in events.values()):
             raise ValueError('没有运动后的X/空格归零记录')
         stops=[e for e in events.values() if e['key'] in ('x',' ')]
-        if not any(any(0<=e['elapsed']-r['feedback']['test_elapsed']<=.1 and moving_command(r) for r in policy)
-                and any(0<=r['feedback']['test_elapsed']-e['elapsed']<=.06 and not np.any(r['velocity_command']) for r in policy) for e in stops):
+        active_x = any(any(0<=e['elapsed']-r['feedback']['test_elapsed']<=.1 and moving_command(r) for r in policy)
+                and any(0<=r['feedback']['test_elapsed']-e['elapsed']<=.06 and not np.any(r['velocity_command']) for r in policy) for e in stops)
+        if not continuous and not active_x:
             raise ValueError('未记录到X/空格从运动切换归零')
         result['command_checks_passed'] = True
+        if continuous:
+            normal_exit = next((r['feedback'].get('keyboard_normal_exit') for r in rows if r.get('feedback',{}).get('keyboard_normal_exit')), None)
+            if rows[-1].get('reason') == '测试时长结束':
+                if normal_exit is None or rows[-1]['feedback']['test_elapsed'] < normal_exit['duration']:
+                    raise ValueError('缺少C受控降低完成记录')
+            if rows[-1].get('mode') != 'damping' or rows[-1].get('reason') not in allowed_reasons[1:]:
+                raise ValueError('持续控制缺少主动停止及阻尼退出记录')
+            return dict(result, result='keyboard_continuous_normal_exit_log_passed' if rows[-1].get('reason') == '测试时长结束' else 'keyboard_continuous_manual_stop_log_passed', keyboard_axis=axis,
+                        active_x_log_confirmed=active_x,
+                        forward_seconds=max(r['feedback']['keyboard_forward_seconds'] for r in policy))
         active=[r for r in rows if r.get('mode') in ('fix_stand','policy')]
         if active[-1]['time']-active[0]['time']<duration-.2: raise ValueError('完整键盘控制时长不足')
         final=rows[-1]
@@ -1027,7 +1168,7 @@ def _serve(args, config, config_sha256):
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize
     path = default_socket(0)
     standing = getattr(args, 'start_standing', False)
-    test = PolicyCheck(config, args.forward_check or args.policy_check, forward=bool(args.forward_check), forward_speed=getattr(args, 'forward_speed', .1), keyboard=getattr(args, 'keyboard', False), keyboard_axis=getattr(args,'keyboard_axis','forward'), yaw_speed=getattr(args,'yaw_speed',.3), turn_forward_speed=getattr(args,'turn_forward_speed',0.), keyboard_motion_seconds=getattr(args,'keyboard_motion_seconds',None)) if getattr(args, 'policy_check', None) or getattr(args, 'forward_check', None) else StandCheck(config, standing) if getattr(args, 'stand_check', False) else ProneTest(
+    test = PolicyCheck(config, args.forward_check or args.policy_check, forward=bool(args.forward_check), forward_speed=getattr(args, 'forward_speed', .1), keyboard=getattr(args, 'keyboard', False), keyboard_axis=getattr(args,'keyboard_axis','forward'), yaw_speed=getattr(args,'yaw_speed',.3), turn_forward_speed=getattr(args,'turn_forward_speed',0.), keyboard_motion_seconds=getattr(args,'keyboard_motion_seconds',None), continuous=getattr(args,'continuous',False), walk_speed=getattr(args,'walk_speed',.3), action_step_mode=getattr(args,'action_step_mode',None)) if getattr(args, 'policy_check', None) or getattr(args, 'forward_check', None) else StandCheck(config, standing) if getattr(args, 'stand_check', False) else ProneTest(
         config, args.test_joint, args.test_amplitude, args.duration, args.motor_test,
         response=getattr(args, 'response_test', False), joint_check=getattr(args, 'joint_check', False))
     publish_dt = 1.0 / getattr(args, 'publish_hz', 500)
@@ -1124,7 +1265,13 @@ def _serve(args, config, config_sha256):
                             server.sendto(json.dumps({'ready': True, 'stopped': bool(test.reason), 'pid': os.getpid(),
                                                       'kind': 'stand_check' if getattr(args, 'stand_check', False) else 'prone_motor' if args.motor_test else 'prone_damping'}).encode(), address)
                         elif kind == 'stop':
-                            test.stop(now, '第二终端请求停止')
+                            source = str(payload.get('source','external'))[:64]
+                            reason = {'keyboard_z':'主终端Z请求停止','ctrl_c':'主终端Ctrl+C请求停止',
+                                      'parent_cleanup':'主终端结束请求停止','parent_error':'主终端异常退出请求停止'}.get(source,'第二终端请求停止')
+                            if not test.reason:
+                                test.stop_request = {'source':source, 'keys':str(payload.get('keys',[]))[:128],
+                                                     'error':str(payload.get('error',''))[:256]}
+                            test.stop(now, reason)
                             replies.append(address)
                         elif kind in ('arm', 'heartbeat', 'startup_heartbeat'):
                             timestamp = float(payload['time'])
@@ -1156,6 +1303,10 @@ def _serve(args, config, config_sha256):
                 if isinstance(test,PolicyCheck) and test.keyboard and test.started is not None:
                     e = now-test.started
                     notice = f'按住{"/".join(test.keyboard_keys).upper()}控制{test.keyboard_axis}，X/空格归零；累计运动最多{test.keyboard_budget:g}秒。' if 8<=e<test.keyboard_window_end else '即将开放键盘窗口，请准备所选方向键和X。' if 7<=e<8 else '输入窗口已结束，速度归零，随后自动降低。' if e>=test.keyboard_window_end else None
+                    if test.normal_exit is not None:
+                        notice='C正常退出：速度归零后受控降低，请等待流程结束；Z仍可紧急终止。'
+                    elif test.continuous and e>=8:
+                        notice='持续键盘控制：Q/W/E/A/S/D，X/空格停走，C受控降低退出，Z/Ctrl+C紧急阻尼；无累计运动预算。'
                     if 8<=e<test.keyboard_window_end and test.keyboard_used>=test.keyboard_budget:
                         notice='累计运动预算已耗尽，方向键不再接受；速度归零，随后自动降低。'
                     if notice is not None and notice!=keyboard_notice:
@@ -1164,6 +1315,8 @@ def _serve(args, config, config_sha256):
                     transport.send(command)
                     if state is not None:
                         feedback = dict(getattr(state, 'feedback', None) or {})
+                        if getattr(test,'stop_request',None) is not None:
+                            feedback['stop_request'] = test.stop_request
                         feedback['control_config_sha256'] = config_sha256
                         feedback['test_phase'] = test.phase(now)[0]
                         feedback['test_elapsed'] = None if test.started is None else now - test.started
@@ -1171,25 +1324,30 @@ def _serve(args, config, config_sha256):
                         feedback['range_transition'] = test.recover_range
                         if isinstance(test, StandCheck):
                             feedback['handoff_delay_seconds'] = test.handoff_delay_seconds
-                            feedback['stand_profile'] = (f'keyboard{int(test.duration)}' if test.keyboard else 'forward19' if test.forward else 'policy16') if isinstance(test, PolicyCheck) else 'standing14' if standing else 'prone17'
+                            feedback['stand_profile'] = (('keyboard_continuous' if test.continuous else f'keyboard{int(test.duration)}') if test.keyboard else 'forward19' if test.forward else 'policy16') if isinstance(test, PolicyCheck) else 'standing14' if standing else 'prone17'
                             if isinstance(test, PolicyCheck):
                                 feedback['policy_inference_count'] = test.inference_count
                                 feedback['policy_sha256'] = test.policy_sha256
                                 feedback['policy_config_sha256'] = config_sha256
                                 feedback['policy_target_processing'] = test.controller.last_target_processing
+                                feedback['policy_action_processing'] = test.controller.last_action_processing
                                 if test.controller.last_policy_fault is not None:
                                     feedback['policy_fault'] = test.controller.last_policy_fault
                                 feedback['policy_entry_blend_seconds'] = test.entry_blend_seconds
                                 feedback['policy_pd_limit_nm'] = test.policy_pd_limit
                                 feedback['policy_feedback_limit_nm'] = test.torque_limit
                                 feedback['settle_tracking_tolerance_rad'] = test.settle_tracking_tolerance
-                                feedback['forward_speed_mps'] = float(test.keyboard_input.limits[0]) if test.keyboard_axis == 'all' else test.forward_speed if test.forward else 0.
+                                feedback['forward_speed_mps'] = test.walk_speed if test.keyboard_axis == 'all' else test.forward_speed if test.forward else 0.
                                 feedback['policy_joint_velocity_limit_rad_s'] = test.policy_velocity_limit
+                                feedback['policy_joint_velocity_limits_sdk_rad_s'] = test.policy_velocity_limits.tolist()
+                                feedback['policy_limits_version'] = 'per_joint_v1'
                                 if test.keyboard:
                                     feedback['keyboard_event'] = test.keyboard_event
                                     feedback['keyboard_forward_seconds'] = test.keyboard_used
-                                    feedback['keyboard_motion_budget_seconds'] = test.keyboard_budget
-                                    feedback['keyboard_window_end_seconds'] = test.keyboard_window_end
+                                    feedback['keyboard_motion_budget_seconds'] = None if test.continuous else test.keyboard_budget
+                                    feedback['keyboard_window_end_seconds'] = None if test.continuous else test.keyboard_window_end
+                                    feedback['keyboard_normal_exit'] = test.normal_exit
+                                    feedback['keyboard_continuous'] = test.continuous
                                     feedback['keyboard_timeout_seconds'] = test.keyboard_timeout
                                     feedback['keyboard_axis'] = test.keyboard_axis
                                     feedback['lateral_speed_mps'] = float(test.keyboard_input.limits[1])
@@ -1203,7 +1361,8 @@ def _serve(args, config, config_sha256):
                         pass
                 if test.reason and now - test.stopped >= 1:
                     print(f'测试停止: {test.reason}；已发送一秒阻尼。', flush=True)
-                    if test.reason not in ('测试时长结束', '第二终端请求停止', '收到停止信号'):
+                    if test.reason not in ('测试时长结束', '第二终端请求停止', '收到停止信号',
+                                           '主终端Z请求停止','主终端Ctrl+C请求停止','主终端结束请求停止'):
                         raise RuntimeError(f'验收未通过: {test.reason}')
                     break
                 if test.started is None and not test.reason and now >= idle_deadline:
@@ -1238,19 +1397,24 @@ def run(args, config):
                '--test-amplitude', str(args.test_amplitude),
                '--forward-check' if args.forward_check else '--policy-check' if args.policy_check else '--stand-check' if args.stand_check else '--joint-check' if args.joint_check else '--response-test' if args.response_test else ('--motor-test' if args.motor_test else '--damping-test')]
     if args.policy_check or args.forward_check:
-        command.extend([args.forward_check or args.policy_check, '--allow-policy-movement'])
+        command.extend([args.forward_check or args.policy_check, '--allow-policy-movement',
+                        '--action-step-mode', resolve_action_step_mode(getattr(args, 'action_step_mode', None), bool(args.forward_check))])
         if args.forward_check:
             command.extend(['--forward-speed', str(args.forward_speed)])
     if args.stand_check or args.policy_check or args.forward_check:
         command.append('--allow-body-movement')
     if args.keyboard:
         command.extend(['--keyboard','--keyboard-axis',args.keyboard_axis,'--yaw-speed',str(args.yaw_speed),'--turn-forward-speed',str(args.turn_forward_speed)])
+        command.extend(['--walk-speed',str(getattr(args,'walk_speed',.3))])
         if args.keyboard_motion_seconds is not None:
             command.extend(['--keyboard-motion-seconds',str(args.keyboard_motion_seconds)])
+    if getattr(args, 'continuous', False):
+        command.append('--continuous')
     if args.start_standing:
         command.append('--start-standing')
     process = subprocess.Popen(command, cwd=LEGGED_GYM_ROOT_DIR, start_new_session=True)
     keys = TerminalKeys()
+    pressed = []
     try:
         deadline = time.monotonic() + 20
         while True:
@@ -1270,13 +1434,14 @@ def run(args, config):
         keys.start()
         if args.turn_forward_speed:
             print('本轮为边走边转：Q/E同时产生向前移动，X归零两个轴。',flush=True)
-        print((f'键盘验收轴：{args.keyboard_axis}；听到窗口提示后输入，X/空格归零；Z/Ctrl+C阻尼停止。' if args.keyboard else 'X、空格、Z或Ctrl+C停止。')+' 第二终端：python -m deploy.deploy_real.go2_watchdog --stop --domain-id 0',flush=True)
+        print((f'键盘验收轴：{args.keyboard_axis}；听到窗口提示后输入，X/空格归零；C受控降低，Z/Ctrl+C紧急阻尼。' if args.keyboard else 'X、空格、Z或Ctrl+C停止。')+' 第二终端：python -m deploy.deploy_real.go2_watchdog --stop --domain-id 0',flush=True)
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sender:
             sender.sendto(json.dumps({'type': 'arm', 'time': time.monotonic()}).encode(), path)
             while process.poll() is None:
                 pressed = keys.poll()
                 if any(key in (('z',) if args.keyboard else ('x',' ','z')) for key in pressed):
-                    request(path, {'type': 'stop'})
+                    source = 'keyboard_z' if 'z' in pressed else 'parent_cleanup'
+                    request(path, {'type': 'stop', 'source':source, 'keys':pressed})
                     break
                 try:
                     sender.sendto(json.dumps({'type': 'heartbeat', 'time': time.monotonic(), 'keys': pressed if args.keyboard else []}).encode(), path)
@@ -1287,14 +1452,19 @@ def run(args, config):
         if process.returncode:
             raise RuntimeError('真机验收进程异常退出；不能认定测试通过')
     finally:
-        keys.close()
-        if process.poll() is None:
-            try:
-                request(path, {'type': 'stop'}, timeout=0.5)
-            except OSError:
-                pass
-            # 不强制结束独立进程；心跳消失后它自行发送阻尼。
-            process.wait(timeout=5)
+        error = sys.exc_info()[1]
+        try:
+            keys.close()
+        finally:
+            if process.poll() is None:
+                source = 'ctrl_c' if isinstance(error,KeyboardInterrupt) else 'parent_error' if error is not None else 'parent_cleanup'
+                try:
+                    request(path, {'type': 'stop', 'source':source, 'keys':pressed,
+                                   'error':'' if error is None else f'{type(error).__name__}: {error}'}, timeout=0.5)
+                except OSError:
+                    pass
+                # 不强制结束独立进程；心跳消失后它自行发送阻尼。
+                process.wait(timeout=5)
 
 
 def parse_args(argv=None):
@@ -1313,6 +1483,9 @@ def parse_args(argv=None):
     parser.add_argument('--keyboard',action='store_true',help='受限键盘运动/X归零；0.3档23秒/运动2秒，0.4档29秒/运动4秒')
     parser.add_argument('--turn-forward-speed',type=float,choices=(0.,.3),default=0.,help='明确允许边走边转，0.30m/s前进；真机转向仅0.3rad/s')
     parser.add_argument('--yaw-speed',type=float,choices=(.3,.4,.5),default=.3,help='转向候选角速度，rad/s')
+    parser.add_argument('--action-step-mode',choices=('reject','limit'),default=None,help='运动策略默认限幅；reject仅保留显式对照')
+    parser.add_argument('--walk-speed',type=float,choices=(.3,.5),default=.3,help='all模式W纯前进速度；不改变S/A/D/Q/E')
+    parser.add_argument('--continuous', action='store_true', help='all持续键盘控制，由Z/Ctrl+C退出；与运动预算互斥')
     parser.add_argument('--keyboard-motion-seconds', type=int, choices=(4,10), help='all统一键盘累计运动预算；10秒档35秒控制加1秒阻尼')
     parser.add_argument('--keyboard-axis',choices=('forward','backward','lateral','yaw','all'),default='forward',help='all统一Q/W/E/A/S/D；其余为单轴验收')
     parser.add_argument('--forward-speed', type=float, choices=(.1, .3, .4), default=.1, help='限时前进档；0.30m/s用于候选行走，0.10m/s保留历史对照')
@@ -1334,11 +1507,21 @@ def parse_args(argv=None):
                         help='验收DDS发布频率，默认500Hz；50Hz仅供对照诊断')
     args = parser.parse_args(argv)
     try:
+        if args.continuous and not args.keyboard:
+            raise ValueError('--continuous需要--keyboard')
         if args.keyboard_motion_seconds is not None and not args.keyboard:
             raise ValueError('--keyboard-motion-seconds需要--keyboard')
-        keyboard_duration = keyboard_timing(args.forward_speed, args.keyboard_axis, args.keyboard_motion_seconds)[2] if args.keyboard else None
+        keyboard_duration = keyboard_timing(args.forward_speed, args.keyboard_axis, args.keyboard_motion_seconds, args.continuous)[2] if args.keyboard else None
     except ValueError as error:
         parser.error(str(error))
+    if args.walk_speed != .3 and (not args.keyboard or args.keyboard_axis != 'all'):
+        parser.error('--walk-speed 0.5仅允许all统一键盘')
+    try:
+        args.action_step_mode = resolve_action_step_mode(args.action_step_mode, bool(args.forward_check))
+    except ValueError as error:
+        parser.error(str(error))
+    if args.walk_speed > .3 and args.action_step_mode != 'limit':
+        parser.error('提高--walk-speed必须同时指定--action-step-mode limit')
     if args.duration is None:
         args.duration = keyboard_duration if args.keyboard else 19 if args.forward_check else 16 if args.policy_check else (14 if args.start_standing else 17) if args.stand_check else 3 if args.response_test or args.joint_check else 2
     if args.test_amplitude is None:
@@ -1381,7 +1564,7 @@ def main():
     config = Go2RealConfig.load(os.path.abspath(args.config), LEGGED_GYM_ROOT_DIR)
     if not args.analyze:
         if args.policy_check or args.forward_check:
-            PolicyCheck(config, args.forward_check or args.policy_check, forward=bool(args.forward_check), forward_speed=getattr(args, 'forward_speed', .1), keyboard=getattr(args, 'keyboard', False), keyboard_axis=getattr(args,'keyboard_axis','forward'), yaw_speed=getattr(args,'yaw_speed',.3), turn_forward_speed=getattr(args,'turn_forward_speed',0.), keyboard_motion_seconds=getattr(args,'keyboard_motion_seconds',None))
+            PolicyCheck(config, args.forward_check or args.policy_check, forward=bool(args.forward_check), forward_speed=getattr(args, 'forward_speed', .1), keyboard=getattr(args, 'keyboard', False), keyboard_axis=getattr(args,'keyboard_axis','forward'), yaw_speed=getattr(args,'yaw_speed',.3), turn_forward_speed=getattr(args,'turn_forward_speed',0.), keyboard_motion_seconds=getattr(args,'keyboard_motion_seconds',None), continuous=getattr(args,'continuous',False), walk_speed=getattr(args,'walk_speed',.3), action_step_mode=getattr(args,'action_step_mode',None))
         elif args.stand_check:
             StandCheck(config, args.start_standing)
         else:
@@ -1395,7 +1578,7 @@ def main():
                       if 'test_joint_sdk' in row.get('feedback', {})),
                      int(config.policy_to_sdk[config.data['policy']['joint_names'].index(args.test_joint)]))
         is_stand = any(row.get('mode') == 'fix_stand' for row in rows)
-        print(json.dumps(assess_keyboard(rows,config) if any(r.get('feedback',{}).get('stand_profile')in ('keyboard23','keyboard29','keyboard35') for r in rows) else assess_policy(rows, config) if any(r.get('feedback', {}).get('stand_profile') in ('policy16', 'forward19', 'keyboard23') for r in rows) else assess_stand(rows, config) if is_stand else assess_response(rows, joint), ensure_ascii=False, indent=2))
+        print(json.dumps(assess_keyboard(rows,config) if any(r.get('feedback',{}).get('stand_profile')in ('keyboard23','keyboard29','keyboard35','keyboard_continuous') for r in rows) else assess_policy(rows, config) if any(r.get('feedback', {}).get('stand_profile') in ('policy16', 'forward19', 'keyboard23') for r in rows) else assess_stand(rows, config) if is_stand else assess_response(rows, joint), ensure_ascii=False, indent=2))
     elif args.restore_normal:
         if os.path.lexists(default_socket(0)):
             raise RuntimeError('验收停止接口仍存在，拒绝恢复原厂模式')
@@ -1407,7 +1590,8 @@ def main():
             if time.monotonic() >= deadline:
                 raise TimeoutError('恢复前无法读取LowState')
             time.sleep(0.01)
-        check_resting_for_restore(config, reader.snapshot(), time.monotonic())
+        print("等待连续一秒静止低姿态；此时不切换模式、不发送LowCmd。",flush=True)
+        wait_resting_for_restore(config, reader)
         client = mode_client()
         if read_mode(client) not in ('', 'normal'):
             raise RuntimeError('未知运动模式，拒绝恢复')
