@@ -904,7 +904,7 @@ def assess_keyboard(rows, config):
         if turn_forward not in (0.,.3) or (turn_forward and axis not in ('yaw','all')):
             raise ValueError('未知边走边转配置')
         if axis == 'all' and (yaw_limit != .3 or abs(lateral_limit-.3)>1e-6 or turn_forward != .3
-                or policy[0]['feedback'].get('forward_speed_mps') != .3):
+                or not np.isclose(policy[0]['feedback'].get('forward_speed_mps',float('nan')), .3, atol=1e-6, rtol=0)):
             raise ValueError('统一键盘限幅配置不符')
         def moving_command(row):
             v = np.asarray(row['velocity_command'])

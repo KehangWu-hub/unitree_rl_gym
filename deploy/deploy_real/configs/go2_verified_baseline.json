@@ -11,7 +11,8 @@
     "automatic lowering",
     "0.30m/s reverse short trial with operator confirmation",
     "0.30m/s left command approximately 4s with continuous steps confirmed",
-    "-0.30m/s right command approximately 3.53s and active X zeroing with operator confirmation"
+    "-0.30m/s right command approximately 3.53s and active X zeroing with operator confirmation",
+    "unified keyboard 0.30m/s forward with active X zeroing, approximately 4s shared budget and automatic lowering; operator confirmed"
   ],
   "not_verified": [
     "long duration",
@@ -20,7 +21,6 @@
     "repeatable lateral transitions across initial/contact states",
     "independently measured actual translation speed and distance",
     "unique trigger of earlier lateral stalls",
-    "unified keyboard forward at 0.30m/s with current parameters",
     "unified keyboard direction switching on hardware"
   ],
   "readiness": {
@@ -60,6 +60,20 @@
         "path": "logs/go2_real/commission/go2_real_20261011_170400_1791709440879733087.jsonl",
         "sha256": "fa8d095026aa38873f1e09ddb9da2d4d086fb4c4406639c1ccc656459ca170d4",
         "operator_confirmed": true
+      }
+    }
+  },
+  "unified_keyboard_status": {
+    "hardware_scope": "W and active X short trial only; direction switching pending",
+    "trials": {
+      "forward_active_x": {
+        "path": "logs/go2_real/commission/go2_real_20261012_113640_1791776200389912139.jsonl",
+        "sha256": "2035c3737d485307d8014216745146d0bd6eab74df82c07b018c77717fa392a1",
+        "operator_confirmed": true,
+        "log_result": "keyboard_unified_and_zero_log_passed",
+        "motion_budget_used_seconds": 4.011060754040955,
+        "active_x_elapsed_seconds": 13.365,
+        "later_lateral_keys": "rejected after shared budget exhausted"
       }
     }
   }

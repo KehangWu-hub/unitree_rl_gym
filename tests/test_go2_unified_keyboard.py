@@ -152,6 +152,15 @@ class UnifiedKeyboardTest(unittest.TestCase):
                          'quaternion_wxyz':[1,0,0,0],'feedback':feedback})
         return rows
 
+    def test_analyzer_accepts_float32_limit_from_real_recorder(self):
+        rows=self.rows()
+        for row in rows:
+            row['feedback']['forward_speed_mps']=float(np.float32(.3))
+            row['feedback']['lateral_speed_mps']=float(np.float32(.3))
+        self.assertEqual(commission.assess_keyboard(rows,self.config)['result'],'keyboard_unified_and_zero_log_passed')
+        rows[1]['feedback']['forward_speed_mps']=.4
+        self.assertEqual(commission.assess_keyboard(rows,self.config)['result'],'inconclusive')
+
     def test_analyzer_handles_mixed_axes_and_requires_active_x_zero(self):
         rows=self.rows()
         self.assertEqual(commission.assess_keyboard(rows,self.config)['result'],'keyboard_unified_and_zero_log_passed')

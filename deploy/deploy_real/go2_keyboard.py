@@ -91,7 +91,7 @@ def main(argv=None):
         print('W/S前后、A/D左右：0.30m/s；Q/E前进0.30m/s加左右转0.30rad/s。', flush=True)
         print('最后方向键生效，换方向先归零再加速；X/空格归零，Z/Ctrl+C阻尼。', flush=True)
         print('看到按键窗口提示后再操作；松键最长0.6秒归零，请主动按X。', flush=True)
-        print('统一入口的W和方向切换尚待现场确认，已有单方向记录不等于切换通过。', flush=True)
+        print('统一入口W与X已有短时现场确认；跨方向切换仍待验证。', flush=True)
     elif options.mode == 'walk-turn':
         print('29秒流程：5秒接管、2秒保持、1秒零速；第8～20秒接受Q/E；第22秒开始降低。', flush=True)
         print('Q/E：前进0.30m/s加左右转0.30rad/s；累计运动最多4秒。X/空格归零。', flush=True)
