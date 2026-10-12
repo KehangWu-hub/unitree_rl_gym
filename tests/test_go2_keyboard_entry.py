@@ -77,7 +77,7 @@ class KeyboardEntryTest(unittest.TestCase):
                 controller.assert_called_once()
 
     def test_offline_and_cancelled_start_never_run_controller(self):
-        trial = SimpleNamespace(policy_pd_limit=14., torque_limit=16.,
+        trial = SimpleNamespace(policy_pd_limit=14., torque_limit=16., duration=29., keyboard_window_end=20., keyboard_budget=4., lower_begin=22.,
                                 controller=SimpleNamespace(validate_policy=lambda: None))
         manifest = {'name':'test','readiness':{'zero':{'path':'zero.jsonl'}}}
         with tempfile.TemporaryDirectory() as directory:

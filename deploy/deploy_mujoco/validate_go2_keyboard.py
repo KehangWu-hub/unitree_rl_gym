@@ -14,7 +14,7 @@ from deploy.deploy_real.go2_commission import assess_keyboard
 
 
 def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_dynamics=False,
-             min_tracking_ratio=.5, key_schedule=None):
+             min_tracking_ratio=.5, key_schedule=None, motion_seconds=4):
     model = mujoco.MjModel.from_xml_path(str(ROOT / 'resources/robots/go2/mjcf/scene_flat.xml'))
     model.opt.timestep = .002
     if not model_dynamics:
@@ -33,7 +33,7 @@ def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_d
     for _ in range(1500):
         data.ctrl[actuator] = np.clip(40 * (q - data.qpos[pos]) - data.qvel[vel], -8, 8)
         mujoco.mj_step(model, data)
-    trial = validate_readiness(readiness, mode, config, manifest)
+    trial = validate_readiness(readiness, mode, config, manifest, motion_seconds)
     last_tau = data.ctrl[actuator].copy()
 
     def state(now, tick):
@@ -91,7 +91,9 @@ def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_d
             rows.append({'time': now, 'mode':command.mode.value, 'reason':command.reason,
                          'joint_pos_sdk':data.qpos[pos].tolist(), 'joint_vel_sdk':data.qvel[vel].tolist(),
                          'quaternion_wxyz':data.qpos[3:7].tolist(), 'velocity_command':trial.controller.command.tolist(),
-                         'feedback':{'stand_profile':'keyboard29', 'test_elapsed':elapsed,
+                         'feedback':{'stand_profile':f'keyboard{int(trial.duration)}', 'test_elapsed':elapsed,
+                                     'keyboard_motion_budget_seconds':trial.keyboard_budget,
+                                     'keyboard_window_end_seconds':trial.keyboard_window_end,
                                      'keyboard_axis':'all', 'keyboard_event':trial.keyboard_event,
                                      'keyboard_forward_seconds':trial.keyboard_used,
                                      'forward_speed_mps':.3, 'lateral_speed_mps':.3,
@@ -106,14 +108,14 @@ def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_d
     signed_distance = motion_distance if mode == 'all' else -delta[0] if mode == 'backward' else delta[1] * (1 if key == 'a' else -1)
     error = float(np.max(np.abs(data.qpos[pos] - trial.lowered)))
     residual = max(residual_speeds, default=float('inf'))
-    flow_passed = (reason == '测试时长结束' and elapsed >= 29.
+    flow_passed = (reason == '测试时长结束' and elapsed >= trial.duration
                    and residual < .02 and bool(zero_commands) and max(zero_commands) == 0.)
     tracking_ratio = motion_distance / commanded_distance if commanded_distance > 0 else 0.
     # 旧1cm判据只能确定方向，不能证明侧移效果。此门槛是明确的电脑端效果判据。
     motion_passed = commanded_distance > 0 and tracking_ratio >= min_tracking_ratio
     log_assessment = assess_keyboard(rows, config) if mode == 'all' else None
     command_checks = (bool(commands) and np.max(np.abs(commands)) <= .30001
-                      and trial.keyboard_used <= 4.06 and bool(zero_commands) and max(zero_commands) == 0.
+                      and trial.keyboard_used <= trial.keyboard_budget+.06 and bool(zero_commands) and max(zero_commands) == 0.
                       and log_assessment.get('command_checks_passed',False)) if mode == 'all' else True
     if mode == 'all':
         flow_passed = flow_passed and command_checks
@@ -135,22 +137,30 @@ def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_d
             'settle_tracking_tolerance_rad': trial.settle_tracking_tolerance,
             'passes_previous_0_15_rad_criterion': error <= .15,
             'motion_budget_used_seconds': trial.keyboard_used,
+            'motion_budget_limit_seconds':trial.keyboard_budget, 'duration_seconds':trial.duration,
             'final_height_m': float(data.qpos[2]),
             'scope': '完整接管、策略、X归零及降低；流程按控制器自身保护评价，日志分析另核对真机卧倒姿态。不模拟退出后的一秒阻尼，不代表真机通过'}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--motion-seconds',type=int,choices=(4,10),default=4,help='统一模式累计运动预算')
     parser.add_argument('--unified', action='store_true', help='检查统一Q/W/E/A/S/D及跨方向切换')
     parser.add_argument('--initial-log', type=Path, help='可选：读取真实站姿记录第一行')
     parser.add_argument('--readiness', type=Path)
     parser.add_argument('--model-dynamics', action='store_true', help='保留MJCF阻尼、惯量和摩擦；这些值不代表实测真机参数')
-    parser.add_argument('--stop-time', type=float, choices=(10.5, 13.3), default=10.5,
-                        help='9秒开始按键；10.5秒测试X，13.3秒覆盖4秒预算耗尽')
+    parser.add_argument('--stop-time', type=float, choices=(10.5, 13.3, 18., 19.3), default=None,
+                        help='9秒开始按键；4秒档默认10.5秒按X，10秒档默认18秒按X')
     parser.add_argument('--output', type=Path, default=ROOT / 'logs/go2_real/commission/keyboard_new_axes_mujoco.json')
     parser.add_argument('--min-tracking-ratio', type=float, default=.5,
                         help='电脑端运动效果门槛：运动窗口内实际/指令距离，默认0.5；不是原厂标准')
     args = parser.parse_args()
+    if args.motion_seconds != 4 and not args.unified:
+        parser.error('--motion-seconds 10需要--unified')
+    if args.stop_time is None:
+        args.stop_time = 18. if args.motion_seconds == 10 else 10.5
+    if args.motion_seconds == 4 and args.stop_time > 13.3:
+        parser.error('4秒档停止时间仅允许10.5或13.3秒')
     if not np.isfinite(args.min_tracking_ratio) or not 0 < args.min_tracking_ratio <= 1:
         parser.error('--min-tracking-ratio必须在(0, 1]范围内')
     manifest = json.loads(BASELINE.read_text())
@@ -160,11 +170,14 @@ def main():
     initial = json.loads(args.initial_log.read_text().splitlines()[0]) if args.initial_log else None
     if args.unified:
         cases = [(key, [(9.,key)], args.stop_time) for key in ('w','s','a','d','q','e')]
-        cases += [('switch_all', [(9.,'w'),(9.7,'a'),(10.4,'q'),(11.1,'s'),(11.8,'d'),(12.5,'e')],12.9),
+        if args.motion_seconds == 10:
+            cases += [('switch_w_a_q',[(9.,'w'),(12.,'a'),(15.,'q')],18.)]
+        else:
+            cases += [('switch_all', [(9.,'w'),(9.7,'a'),(10.4,'q'),(11.1,'s'),(11.8,'d'),(12.5,'e')],12.9),
                   ('reverse', [(9.,'w'),(9.8,'s'),(10.6,'w')],11.4),
                   ('turn_reverse', [(9.,'q'),(9.8,'e')],10.5)]
         reports = [simulate('all', name, config, manifest, readiness, initial, stop, args.model_dynamics,
-                            args.min_tracking_ratio, schedule) for name, schedule, stop in cases]
+                            args.min_tracking_ratio, schedule, args.motion_seconds) for name, schedule, stop in cases]
     else:
         reports = [simulate(mode, key, config, manifest, readiness, initial, args.stop_time, args.model_dynamics,
                             args.min_tracking_ratio)
@@ -173,7 +186,7 @@ def main():
               'command_checks_passed':all(row['command_checks_passed'] for row in reports),
               'motion_passed':all(row['motion_passed'] for row in reports), 'policy_sha256': sha256(config.policy_path), 'config_sha256': sha256(CONFIG),
               'initial_log': str(args.initial_log) if args.initial_log else None,
-              'stop_time': args.stop_time, 'cases': reports, 'passed': all(row['passed'] for row in reports)}
+              'stop_time': args.stop_time, 'motion_seconds':args.motion_seconds, 'cases': reports, 'passed': all(row['passed'] for row in reports)}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps(result, ensure_ascii=False, indent=2))

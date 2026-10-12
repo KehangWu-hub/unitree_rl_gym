@@ -30,7 +30,9 @@ def verify_baseline(config, manifest, config_path=CONFIG):
         raise ValueError('配置与已验证基线不一致；请先核对改动和验证记录')
 
 
-def validate_readiness(path, mode, config, manifest):
+def validate_readiness(path, mode, config, manifest, motion_seconds=4):
+    if motion_seconds not in (4,10) or (motion_seconds != 4 and mode != "all"):
+        raise ValueError("10秒运动档仅用于all统一模式")
     kind = 'stand' if mode == 'zero' else 'zero'
     rows = [json.loads(line) for line in Path(path).read_text(encoding='utf-8').splitlines() if line.strip()]
     pinned = manifest['readiness'][kind]
@@ -50,10 +52,13 @@ def validate_readiness(path, mode, config, manifest):
     return commission.PolicyCheck(config, str(path), forward=mode != 'zero',
                                   forward_speed=.4 if mode != 'zero' else .1,
                                   keyboard=mode != 'zero', keyboard_axis={'all':'all', 'walk-turn':'yaw', 'backward':'backward', 'lateral':'lateral'}.get(mode, 'forward'),
-                                  yaw_speed=.3, turn_forward_speed=.3 if mode in ('all', 'walk-turn') else 0.)
+                                  yaw_speed=.3, turn_forward_speed=.3 if mode in ('all', 'walk-turn') else 0.,
+                                  keyboard_motion_seconds=motion_seconds if mode == 'all' else None)
 
 
-def commission_arguments(mode, network, readiness):
+def commission_arguments(mode, network, readiness, motion_seconds=4):
+    if motion_seconds not in (4,10) or (motion_seconds != 4 and mode != "all"):
+        raise ValueError("10秒运动档仅用于all统一模式")
     args = [network, '--config', str(CONFIG),
             '--policy-check' if mode == 'zero' else '--forward-check', str(readiness),
             '--start-standing', '--confirm-standing', '--release-mode',
@@ -61,18 +66,23 @@ def commission_arguments(mode, network, readiness):
     if mode != 'zero':
         args += ['--keyboard', '--forward-speed', '0.4', '--keyboard-axis', {'all':'all', 'walk-turn':'yaw', 'backward':'backward', 'lateral':'lateral'}[mode],
                  '--yaw-speed', '0.3', '--turn-forward-speed', '0.3' if mode in ('all', 'walk-turn') else '0.0']
+    if mode == 'all':
+        args += ['--keyboard-motion-seconds',str(motion_seconds)]
     return args
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=('all', 'zero', 'walk-turn', 'backward', 'lateral'), default='all')
+    parser.add_argument('--motion-seconds',type=int,choices=(4,10),default=4,help='all统一模式累计运动预算，默认4秒')
     parser.add_argument('--network', default='eno1')
     parser.add_argument('--readiness', type=Path, help='覆盖本机已验证的前置JSONL路径')
     action = parser.add_mutually_exclusive_group()
     action.add_argument('--check', action='store_true', help='离线检查；也是缺省行为')
     action.add_argument('--run', action='store_true', help='在前台确认后启动真机流程')
     options = parser.parse_args(argv)
+    if options.motion_seconds != 4 and options.mode != 'all':
+        parser.error('--motion-seconds 10仅用于all统一模式')
     if options.network == 'lo' or not options.network.strip():
         parser.error('此入口仅用于实体网卡，不能使用lo')
     try:
@@ -81,13 +91,13 @@ def main(argv=None):
         verify_baseline(config, manifest)
         kind = 'stand' if options.mode == 'zero' else 'zero'
         readiness = options.readiness or ROOT / manifest['readiness'][kind]['path']
-        trial = validate_readiness(readiness, options.mode, config, manifest)
+        trial = validate_readiness(readiness, options.mode, config, manifest, options.motion_seconds)
         trial.controller.validate_policy()
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         parser.error(f'离线核对失败：{error}。历史日志不随仓库分发；可用--readiness提供匹配记录。')
     print(f'基线：{manifest["name"]}；PD {trial.policy_pd_limit:g}Nm，反馈停止 {trial.torque_limit:g}Nm。', flush=True)
     if options.mode == 'all':
-        print('29秒流程：第8～20秒接受Q/W/E/A/S/D；累计运动最多4秒，第22秒开始降低。', flush=True)
+        print(f'{trial.duration:g}秒流程：第8～{trial.keyboard_window_end:g}秒接受Q/W/E/A/S/D；累计运动最多{trial.keyboard_budget:g}秒，第{trial.lower_begin:g}秒开始降低。', flush=True)
         print('W/S前后、A/D左右：0.30m/s；Q/E前进0.30m/s加左右转0.30rad/s。', flush=True)
         print('最后方向键生效，换方向先归零再加速；X/空格归零，Z/Ctrl+C阻尼。', flush=True)
         print('看到按键窗口提示后再操作；松键最长0.6秒归零，请主动按X。', flush=True)
@@ -108,7 +118,7 @@ def main(argv=None):
         print('零速度策略也可能迈步或漂移；本模式X/空格直接停止并阻尼。', flush=True)
     print('随后1秒阻尼；Z/Ctrl+C或第二终端停止进入阻尼。结束后不自动恢复normal。', flush=True)
     print('第二终端：python -m deploy.deploy_real.go2_watchdog --stop --domain-id 0', flush=True)
-    arguments = commission_arguments(options.mode, options.network, readiness)
+    arguments = commission_arguments(options.mode, options.network, readiness, options.motion_seconds)
     if not options.run:
         print('离线检查通过；没有初始化DDS或发送电机命令。加--run才启动。', flush=True)
         return 0

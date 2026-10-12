@@ -22,12 +22,12 @@ class UnifiedKeyboardTest(unittest.TestCase):
     def setUpClass(cls):
         cls.config = Go2RealConfig.load(ROOT / 'deploy/deploy_real/configs/go2.yaml', str(ROOT))
 
-    def trial(self):
+    def trial(self, motion_seconds=None):
         with tempfile.NamedTemporaryFile(mode='w') as log, patch.object(commission, 'assess_policy', return_value={'result':'zero_velocity_policy_trial_passed'}):
             log.write('{"mode":"policy","feedback":{"policy_entry_blend_seconds":0.5,"policy_pd_limit_nm":14,"policy_feedback_limit_nm":16}}')
             log.flush()
             trial = commission.PolicyCheck(self.config, log.name, policy=lambda obs:torch.zeros((1,12)),
-                    forward=True, forward_speed=.4, keyboard=True, keyboard_axis='all', turn_forward_speed=.3)
+                    forward=True, forward_speed=.4, keyboard=True, keyboard_axis='all', turn_forward_speed=.3, keyboard_motion_seconds=motion_seconds)
         trial.started = 0.
         trial.velocity_profile(8.)
         return trial
@@ -40,6 +40,55 @@ class UnifiedKeyboardTest(unittest.TestCase):
             trial.feed_key(key, now)
             command = trial.velocity_profile(now)
         return command
+
+    def test_ten_second_profile_preserves_protection_and_shares_budget(self):
+        trial=self.trial(10)
+        self.assertEqual((trial.keyboard_window_end,trial.keyboard_budget,trial.duration),(26,10,35))
+        self.assertEqual((trial.policy_pd_limit,trial.torque_limit,trial.keyboard_timeout),(14,16,.6))
+        for i in range(580):
+            now=8.02+i*.02
+            trial.feed_keys(['w' if i<150 else 'a' if i<300 else 'q'],now)
+            command=trial.velocity_profile(now)
+        self.assertTrue(10<=trial.keyboard_used<=10.03)
+        np.testing.assert_array_equal(command,0)
+        trial.feed_key('d',20.)
+        self.assertFalse(trial.keyboard_event['accepted'])
+        used=trial.keyboard_used;trial.feed_key('x',20.01)
+        self.assertEqual(trial.keyboard_used,used)
+        self.assertTrue(trial.keyboard_event['accepted'])
+        trial=self.trial(10); self.hold(trial,'w',25.)
+        np.testing.assert_array_equal(trial.velocity_profile(26.),0)
+        trial.feed_key('w',26.)
+        self.assertEqual(trial.keyboard_event['reason'],'outside_window')
+
+    def test_ten_second_cli_selects_fixed_duration_and_rejects_other_modes(self):
+        with patch('sys.stdin.isatty',return_value=True):
+            args=commission.parse_args(entry.commission_arguments('all','eno1',Path('zero.jsonl'),10))
+        self.assertEqual(args.duration,35)
+        self.assertEqual(args.keyboard_motion_seconds,10)
+        for mode in ('zero','walk-turn','backward','lateral'):
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                entry.commission_arguments(mode,'eno1',Path('zero.jsonl'),10)
+        arguments=entry.commission_arguments('all','eno1',Path('zero.jsonl'),10)
+        for extra in (['--duration','29'],['--duration','60']):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                commission.parse_args(arguments+extra)
+
+    def test_ten_second_log_profile_uses_new_window_and_budget(self):
+        rows=self.rows()
+        for r in rows:
+            f=r['feedback'];f['stand_profile']='keyboard35'
+            f['keyboard_motion_budget_seconds']=10.;f['keyboard_window_end_seconds']=26.
+        rows[-3]['time']=27.9;rows[-3]['feedback']['test_elapsed']=27.9
+        rows[-2]['time']=34.99;rows[-2]['feedback']['test_elapsed']=34.99
+        rows[-1]['time']=35.;rows[-1]['feedback']['test_elapsed']=35.
+        self.assertEqual(commission.assess_keyboard(rows,self.config)['result'],'keyboard_unified_and_zero_log_passed')
+        bad=copy.deepcopy(rows);bad[2]['feedback']['keyboard_motion_budget_seconds']=100
+        self.assertEqual(commission.assess_keyboard(bad,self.config)['result'],'inconclusive')
+        bad=copy.deepcopy(rows);bad[2]['feedback']['keyboard_forward_seconds']=10.1
+        self.assertEqual(commission.assess_keyboard(bad,self.config)['result'],'inconclusive')
+        bad=copy.deepcopy(rows);bad[2]['velocity_command']=[0,0,.3]
+        self.assertEqual(commission.assess_keyboard(bad,self.config)['result'],'inconclusive')
 
     def test_default_entry_uses_unified_profile_and_same_torque_and_timing(self):
         with patch('sys.stdin.isatty', return_value=True):
