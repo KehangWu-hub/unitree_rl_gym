@@ -6,7 +6,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from deploy.deploy_mujoco.deploy_go2 import joint_addresses
+from deploy.deploy_mujoco.deploy_go2 import apply_model_overrides, joint_addresses, load_runtime_config
 from deploy.deploy_real.deploy_real_go2 import Go2Mode, Go2State
 from deploy.deploy_real.go2_keyboard import BASELINE, CONFIG, ROOT, sha256, validate_readiness, verify_baseline
 from deploy.deploy_real.deploy_real_go2 import Go2RealConfig
@@ -18,10 +18,8 @@ def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_d
     model = mujoco.MjModel.from_xml_path(str(ROOT / 'resources/robots/go2/mjcf/scene_flat.xml'))
     model.opt.timestep = .002
     if not model_dynamics:
-        model.dof_damping[6:] = 0
-        model.dof_armature[6:] = 0
-        model.dof_frictionloss[6:] = 0
-        model.geom_friction[:, 0] = 1.
+        runtime = load_runtime_config(ROOT / 'deploy/deploy_mujoco/configs/go2.yaml')
+        apply_model_overrides(model, runtime.get('model_overrides', {}))
     pos, vel, actuator = joint_addresses(model, config.data['policy']['sdk_joint_names'])
     data = mujoco.MjData(model)
     q = np.tile([0., .8, -1.5], 4) if initial is None else np.asarray(initial['joint_pos_sdk'])
@@ -153,7 +151,8 @@ def simulate(mode, key, config, manifest, readiness, initial, stop_time, model_d
             'moving_body_axis_distance_m': motion_distance, 'distance_tracking_ratio': tracking_ratio,
             'min_tracking_ratio': min_tracking_ratio,
             'last_moving_second_mean_axis_speed_m_s': float(np.mean(last_speeds)) if last_speeds else None,
-            'dynamics': 'original_mjcf' if model_dynamics else 'training_overrides',
+            'dynamics': 'original_mjcf' if model_dynamics else 'runtime_overrides',
+            'model_overrides': None if model_dynamics else runtime.get('model_overrides', {}),
             'reason': reason, 'elapsed_seconds': elapsed, 'policy_displacement_xy_m': delta.tolist(),
             'residual_planar_speed_m_s': residual, 'final_tracking_error_rad': error,
             'settle_tracking_tolerance_rad': trial.settle_tracking_tolerance,

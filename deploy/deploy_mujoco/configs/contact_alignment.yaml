@@ -1,0 +1,10 @@
+# 速度跟踪研究的独立仿真配置；不替换既有键盘流程或真机配置。
+# PhysX实际加载的URDF形状参数中，滚动和扭转摩擦均为0。
+# 参数相同不保证不同物理引擎接触求解一致；不是实测真机参数。
+model_overrides:
+  joint_damping: 0.0
+  armature: 0.0
+  friction_loss: 0.0
+  sliding_friction: 1.0
+  torsional_friction: 0.0
+  rolling_friction: 0.0

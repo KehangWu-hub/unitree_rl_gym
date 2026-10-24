@@ -1,0 +1,15 @@
+# Simulation research only; no real-control entry imports this file.
+policy_sha256: a955b95e911e30f2db5d0435676c76dcf9b193a663adb5992a9b5abcb056773a
+# Copied from this frozen policy's training export, not hardware specifications.
+training_export_source: logs/rough_go2_45x60_rewards/exported/params/deploy.yaml
+training_export_sha256: 3a01b2d72e9d5c3095e21e8039eba2e62f988cfe881ad047545a9194078f068d
+compensation_bounds:
+  - [-1.0, 1.0]
+  - [-1.0, 1.0]
+  - [-1.0, 1.0]
+kp: 0.8
+ki: 0.8
+filter_seconds: 0.1
+stance_damping: 3.0
+low_speed_damping: 10.0
+forward_low_speed_damping: 3.0

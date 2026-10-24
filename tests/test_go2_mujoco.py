@@ -3,6 +3,7 @@ import unittest
 
 import mujoco
 import numpy as np
+from deploy.deploy_mujoco.deploy_go2 import apply_model_overrides, load_runtime_config
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -48,6 +49,20 @@ class Go2MujocoModelTest(unittest.TestCase):
             mujoco.mj_step(self.model, data)
         self.assertTrue(np.isfinite(data.qpos).all())
         self.assertGreater(data.qpos[2], 0.20)
+
+    def test_explicit_alignment_removes_foot_rolling_and_torsional_friction(self):
+        runtime = load_runtime_config(os.path.join(ROOT, 'deploy/deploy_mujoco/configs/contact_alignment.yaml'))
+        feet = [self.model.geom(name).id for name in ('FR', 'FL', 'RR', 'RL')]
+        self.assertTrue(np.any(self.model.geom_friction[feet, 1:] > 0))
+        apply_model_overrides(self.model, runtime['model_overrides'])
+        np.testing.assert_array_equal(self.model.geom_friction[feet, 1:], 0.)
+        np.testing.assert_array_equal(self.model.geom_friction[feet, 0], 1.)
+
+    def test_invalid_model_override_does_not_partially_mutate_model(self):
+        before = self.model.dof_damping.copy()
+        with self.assertRaises(ValueError):
+            apply_model_overrides(self.model, {'joint_damping': .5, 'rolling_friction': -.1})
+        np.testing.assert_array_equal(self.model.dof_damping, before)
 
 
 if __name__ == "__main__":

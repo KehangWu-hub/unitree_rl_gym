@@ -42,6 +42,17 @@ TorchScript 策略
 
 Critic 仅用于训练。部署时，Actor 根据三维速度指令生成关节目标，由 PD 控制执行。
 
+## 目录用途
+
+| 目录 | 用途 |
+|---|---|
+| `legged_gym/` | Isaac Gym 训练、策略回放和导出 |
+| `deploy/deploy_mujoco/` | 普通 MuJoCo 运行与键盘流程验证 |
+| `deploy/deploy_real/` | 真机连接、控制和停止 |
+| `deploy/common/` | 策略接口，以及保留供研究复用的速度反馈实现 |
+| `tests/` | 自动检查代码、限制与停止逻辑；日常运行不需要打开 |
+| `logs/` | 本地训练记录、实验数据和图表，不随 Git 上传 |
+
 ## 开始使用
 
 ```bash
@@ -108,6 +119,8 @@ python deploy/deploy_mujoco/deploy_go2.py \
 ```
 
 程序输出位移、速度误差、机身高度、倾角和力矩等指标。模型路径与物理参数在 [MuJoCo 配置](deploy/deploy_mujoco/configs/go2.yaml) 中设置，也可通过 `--policy` 和 `--deploy-config` 指定成套导出文件。
+
+速度统计由上述仿真入口直接输出：`mean_body_velocity` 为机身坐标系平均速度，`velocity_error_xy` 为线速度误差。保留的 PI 补偿实现及参数见[速度观测与补偿说明](doc/velocity_tracking.md)；普通仿真入口不会自动启用这些补偿。
 
 ### 真机部署
 

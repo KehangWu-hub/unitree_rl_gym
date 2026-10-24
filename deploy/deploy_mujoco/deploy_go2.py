@@ -26,6 +26,21 @@ def load_runtime_config(path):
         return yaml.safe_load(stream)
 
 
+def apply_model_overrides(model, overrides):
+    """Apply explicit simulation parameters, including all friction components."""
+    targets = {"joint_damping": model.dof_damping[6:],
+               "armature": model.dof_armature[6:],
+               "friction_loss": model.dof_frictionloss[6:],
+               "sliding_friction": model.geom_friction[:, 0],
+               "torsional_friction": model.geom_friction[:, 1],
+               "rolling_friction": model.geom_friction[:, 2]}
+    for name, value in overrides.items():
+        if name not in targets or not np.isfinite(float(value)) or float(value) < 0:
+            raise ValueError(f"Invalid MuJoCo model override: {name}={value}")
+    for name, value in overrides.items():
+        targets[name][:] = float(value)
+
+
 def joint_addresses(model, joint_names):
     """按策略的关节顺序，找出每个关节在 MuJoCo 数据数组中的编号。"""
     # data.qpos 存当前关节角，data.qvel 存当前关节速度。
@@ -57,14 +72,7 @@ def run(args):
     model.opt.timestep = float(args.simulation_dt or runtime["simulation_dt"])
     # 覆盖 MJCF 的部分物理参数，使本次仿真尽量匹配训练环境。
     overrides = runtime.get("model_overrides", {})
-    if "joint_damping" in overrides:
-        model.dof_damping[6:] = float(overrides["joint_damping"])
-    if "armature" in overrides:
-        model.dof_armature[6:] = float(overrides["armature"])
-    if "friction_loss" in overrides:
-        model.dof_frictionloss[6:] = float(overrides["friction_loss"])
-    if "sliding_friction" in overrides:
-        model.geom_friction[:, 0] = float(overrides["sliding_friction"])
+    apply_model_overrides(model, overrides)
     # 物理仿真每 simulation_dt 秒走一步；策略每 step_dt 秒才计算一次动作。
     # 例如 0.002 秒与 0.02 秒对应：每 10 次物理步运行一次策略。
     step_dt = float(deploy_cfg["step_dt"])
