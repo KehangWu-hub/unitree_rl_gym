@@ -1,21 +1,24 @@
-# Go2 HIM model
+# Go2 HIM 模型说明
 
-`policy.pt` is the unmodified complete HIM encoder and Actor supplied by
-[HIMLOCO_GO2](https://github.com/1170632760/HIMLOCO_GO2), commit
-`2e70bcf66d2a479add5a688ed4d78d863d166c11`. Exact provenance and SHA256 are in
-`provenance.json`. The local 300-iteration fine-tuning candidate failed validation
-and is not the model in this directory.
+`policy.pt` 来自 [HIMLOCO_GO2](https://github.com/1170632760/HIMLOCO_GO2)，
+对应提交 `2e70bcf66d2a479add5a688ed4d78d863d166c11`，包含完整的HIM历史编码器和Actor，权重未经修改。
+详细来源与SHA256记录在 `provenance.json` 中。本地继续训练300轮的候选模型未通过验收，
+本目录采用的是源仓库预训练模型。
 
-`deploy.yaml` records the training interface: six newest-first frames of 45 values,
-three estimated velocities, a normalized 16-value latent, a 64-input Actor, and
-12 position actions. Nominal PD gains are 20/0.5 and action scale is 0.25.
-The original real-controller YAML scales the normalized yaw joystick by 0.785;
-this project supplies yaw in rad/s and uses the training observation scale 0.25.
+`deploy.yaml` 记录训练与部署接口：
 
-Simulation and field configurations are in `deploy/deploy_mujoco/configs/go2_him.yaml`
-and `deploy/deploy_real/configs/go2_him.yaml`. Physical readiness must be recorded
-for this model; previous policies' records cannot be reused.
+- 完整模型输入270维：6帧历史观测，每帧45维，最新帧在前。
+- 编码器输出3维估计速度和16维归一化隐变量。
+- Actor输入64维：当前观测45维＋估计速度3维＋隐变量16维。
+- 模型输出12个关节位置动作，动作缩放为0.25。
+- 策略PD增益为Kp＝20、Kd＝0.5。
 
-Upstream project licensing is retained in
-`third_party/himloco_rsl_rl/HIMLoco_LICENSE` (CC BY-NC-SA 4.0); vendored algorithm
-files also retain their original notices.
+源仓库真机配置将归一化的偏航摇杆输入乘以0.785；本项目直接使用rad/s为单位的偏航角速度指令，
+采用训练时的观测缩放0.25。
+
+MuJoCo仿真配置位于 `deploy/deploy_mujoco/configs/go2_him.yaml`，
+真机配置位于 `deploy/deploy_real/configs/go2_him.yaml`，路径均相对于项目根目录。
+真机部署需要为本模型重新完成现场验收，不能复用旧策略的验收记录。
+
+源项目的CC BY-NC-SA 4.0许可证保存在 `third_party/himloco_rsl_rl/HIMLoco_LICENSE` 中；
+引入的算法文件也保留了各自的原始版权和许可证声明。
