@@ -1,0 +1,20 @@
+# 真机PI候选参数；不修改冻结策略、关节PD或go2.yaml。
+# 首轮目标为原0.30档的一半0.15，策略内部指令仍受原command_limits约束。
+# 这些是项目试验参数，并非宇树推荐值。
+kp: 0.8
+ki: 0.8
+filter_seconds: 0.1
+command_slew: 1.0
+target_limits: [0.15, 0.15, 0.15]
+max_correction: [0.2, 0.2, 0.2]
+feedback_timeout: 0.1
+max_yaw_disagreement: 0.3
+
+# 新键盘目标不变，额外0.1留作PI内部补偿；这是项目候选值。
+# 0.6/0.5/0.6仍在冻结训练导出的各轴[-1,1]范围内，不是硬件速度规格。
+uniform:
+  command_limits: [0.6, 0.5, 0.6]
+  kp: 0.8
+  ki: 0.8
+  target_limits: [0.5, 0.4, 0.5]
+  max_correction: [0.1, 0.1, 0.1]

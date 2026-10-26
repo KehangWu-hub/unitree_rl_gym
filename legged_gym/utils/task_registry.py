@@ -116,7 +116,17 @@ class TaskRegistry():
             log_dir = os.path.join(log_root, datetime.now().strftime('%b%d_%H-%M-%S') + '_' + train_cfg.runner.run_name)
         
         train_cfg_dict = class_to_dict(train_cfg)
-        runner = OnPolicyRunner(env, train_cfg_dict, log_dir, device=args.rl_device)
+        runner_name = train_cfg_dict["runner"].get("runner_class_name", "OnPolicyRunner")
+        # Upstream HIM configs place this field at the top level.
+        runner_name = train_cfg_dict.get("runner_class_name", runner_name)
+        if runner_name == "HIMOnPolicyRunner":
+            from third_party.himloco_rsl_rl.rsl_rl.runners import HIMOnPolicyRunner
+            runner_class = HIMOnPolicyRunner
+        elif runner_name == "OnPolicyRunner":
+            runner_class = OnPolicyRunner
+        else:
+            raise ValueError(f"Unsupported runner: {runner_name}")
+        runner = runner_class(env, train_cfg_dict, log_dir, device=args.rl_device)
         # 创建新日志目录前保留续训设置
         resume = train_cfg.runner.resume
         if resume:

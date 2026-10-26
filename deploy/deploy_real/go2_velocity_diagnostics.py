@@ -28,9 +28,36 @@ def main():
     parser.add_argument("--duration", type=float, default=10.)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--check", action="store_true", help="Inspect SDK fields offline; no DDS initialization")
+    parser.add_argument("--analyze", type=Path, help="离线检查键盘shadow日志的接管后速度连续性")
     args = parser.parse_args()
     if not np.isfinite(args.duration) or not 1 <= args.duration <= 60:
         parser.error("Read-only duration must be 1..60 seconds")
+    if args.analyze:
+        if args.check:
+            parser.error('--analyze与--check不能同时使用')
+        from deploy.deploy_real.go2_keyboard import BASELINE
+        from deploy.deploy_real.go2_velocity_feedback import VelocityFeedback, validate_feedback_readiness
+        manifest = json.loads(BASELINE.read_text())
+        try:
+            rows = [json.loads(line) for line in args.analyze.read_text().splitlines() if line.strip()]
+            observation = next(r['feedback']['velocity_feedback'] for r in rows
+                if r.get('mode') == 'policy' and 'velocity_feedback' in r.get('feedback',{}))
+            source = observation.get('source','sport')
+            profile = observation.get('speed_profile','legacy')
+            config = Go2RealConfig.load(CONFIG, str(ROOT))
+            observer = VelocityFeedback('shadow', [.5,.4,.5] if profile == 'uniform' else config.data['command_limits'],
+                'body' if source == 'kinematic' else observation.get('frame') if observation.get('frame') in ('body','world') else None,
+                source=source, config=config, speed_profile=profile)
+            result = validate_feedback_readiness(args.analyze, manifest['policy_sha256'], manifest['config_sha256'],
+                source=source, estimator_sha256=getattr(observer.source,'fingerprint',None),
+                speed_profile=profile if profile == 'uniform' else None,
+                profile_sha256=observer.profile_sha256 if profile == 'uniform' else None)
+            result['source'] = source
+        except (OSError, ValueError, KeyError, TypeError, StopIteration) as error:
+            print(json.dumps({'publication_ready': False, 'reason': str(error)}, ensure_ascii=False, indent=2))
+            return 1
+        print(json.dumps({'publication_ready': True, **result}, ensure_ascii=False, indent=2))
+        return 0
     from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
     if args.check:
         print(json.dumps({"read_only": True, "dds_initialized": False,

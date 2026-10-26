@@ -22,12 +22,12 @@ class UnifiedKeyboardTest(unittest.TestCase):
     def setUpClass(cls):
         cls.config = Go2RealConfig.load(ROOT / 'deploy/deploy_real/configs/go2.yaml', str(ROOT))
 
-    def trial(self, motion_seconds=None, walk_speed=.3, continuous=False):
+    def trial(self, motion_seconds=None, walk_speed=.3, continuous=False, left_speed=.3, speed_profile="legacy"):
         with tempfile.NamedTemporaryFile(mode='w') as log, patch.object(commission, 'assess_policy', return_value={'result':'zero_velocity_policy_trial_passed'}):
             log.write('{"mode":"policy","feedback":{"policy_entry_blend_seconds":0.5,"policy_pd_limit_nm":14,"policy_feedback_limit_nm":16}}')
             log.flush()
             trial = commission.PolicyCheck(self.config, log.name, policy=lambda obs:torch.zeros((1,12)),
-                    forward=True, forward_speed=.4, keyboard=True, keyboard_axis='all', turn_forward_speed=.3, keyboard_motion_seconds=motion_seconds, walk_speed=walk_speed, action_step_mode=None, continuous=continuous)
+                    forward=True, forward_speed=.4, keyboard=True, keyboard_axis='all', turn_forward_speed=.5 if speed_profile == 'uniform' else .3, yaw_speed=.5 if speed_profile == 'uniform' else .3, speed_profile=speed_profile, keyboard_motion_seconds=motion_seconds, walk_speed=walk_speed, action_step_mode=None, continuous=continuous, left_speed=left_speed)
         trial.started = 0.
         trial.velocity_profile(8.)
         return trial
@@ -40,6 +40,104 @@ class UnifiedKeyboardTest(unittest.TestCase):
             trial.feed_key(key, now)
             command = trial.velocity_profile(now)
         return command
+
+    def test_uniform_six_directions_limits_switch_and_lowering(self):
+        trial=self.trial(continuous=True,walk_speed=.5,left_speed=.4,speed_profile='uniform')
+        now=8.
+        for key,target in [('w',[.5,0,0]),('s',[-.5,0,0]),('a',[0,.4,0]),('d',[0,-.4,0]),('q',[.5,0,.5]),('e',[.5,0,-.5])]:
+            previous=trial.keyboard_command.copy()
+            trial.feed_key(key,now)
+            if np.any(previous):
+                np.testing.assert_array_equal(trial.velocity_profile(now+.02),0.)
+                now+=.02
+            previous=np.zeros(3)
+            for _ in range(40):
+                now+=.02;trial.feed_key(key,now);value=trial.velocity_profile(now)
+                self.assertLessEqual(float(np.max(abs(value-previous))),.020001)
+                previous=value
+            np.testing.assert_allclose(value,target,atol=1e-6)
+            trial.controller.set_velocity_command(value)
+            np.testing.assert_allclose(trial.controller.command,target,atol=1e-6)
+        self.assertEqual(trial.config.data['command_limits'],[.5,.3,.5])
+        self.assertEqual(trial.controller.config.data['command_limits'],[.5,.4,.5])
+        self.assertEqual((trial.policy_pd_limit,trial.torque_limit),(14.,16.))
+        trial.feed_key('x',now+.02)
+        np.testing.assert_array_equal(trial.velocity_profile(now+.02),0.)
+        trial.policy_command=object()
+        self.assertTrue(trial.request_normal_exit(now+.1))
+        self.assertIsNotNone(trial.controlled_lowering)
+        self.assertAlmostEqual(trial.duration-(now+.1),19.)
+
+    def test_uniform_profile_argument_propagation_and_rejections(self):
+        argv=entry.commission_arguments('all','eno1',Path('zero.jsonl'),walk_speed=.5,left_speed=.4,speed_profile='uniform')
+        with patch('sys.stdin.isatty',return_value=True):
+            args=commission.parse_args(argv)
+        self.assertEqual((args.speed_profile,args.walk_speed,args.left_speed,args.yaw_speed,args.turn_forward_speed),('uniform',.5,.4,.5,.5))
+        for extra in (['--velocity-feedback','pi'],['--gait-restart'],['--yaw-speed','.3'],['--walk-speed','.3'],['--left-speed','.3'],['--action-step-mode','reject']):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit):
+                commission.parse_args(argv+extra)
+        with self.assertRaises(ValueError):
+            self.trial(continuous=False,walk_speed=.5,left_speed=.4,speed_profile='uniform')
+
+    def test_uniform_log_bounds_do_not_expand_historical_scope(self):
+        rows=self.rows()
+        for r in rows:
+            r['feedback'].update(stand_profile='keyboard_continuous',keyboard_continuous=True,
+                keyboard_motion_budget_seconds=None,keyboard_window_end_seconds=None,
+                speed_profile='uniform',forward_speed_mps=.5,left_speed_mps=.4,
+                yaw_speed_rad_s=.5,turn_forward_speed_mps=.5,
+                policy_action_processing={'mode':'limit','step_limit':.64,'previous_action':[0.]*12,'raw_action':[0.]*12,'applied_action':[0.]*12})
+        rows[-1]['reason']='主终端Z请求停止'
+        for command in ([.5,0,0],[-.5,0,0],[0,.4,0],[0,-.4,0],[.5,0,.5],[.5,0,-.5]):
+            rows[2]['velocity_command']=command
+            self.assertEqual(commission.assess_keyboard(rows,self.config)['result'],'keyboard_continuous_manual_stop_log_passed')
+        for command in ([.51,0,0],[-.51,0,0],[0,.41,0],[0,-.41,0],[.5,0,.51],[.5,0,.3]):
+            bad=copy.deepcopy(rows);bad[2]['velocity_command']=command
+            self.assertEqual(commission.assess_keyboard(bad,self.config)['result'],'inconclusive')
+        bad=copy.deepcopy(rows);bad[2]['feedback'].pop('speed_profile')
+        self.assertEqual(commission.assess_keyboard(bad,self.config)['result'],'inconclusive')
+
+    def test_left_speed_candidate_changes_only_a_and_is_not_silently_clipped(self):
+        original_limits=list(self.config.data['command_limits'])
+        for key,target in [('a',[0,.4,0]),('d',[0,-.3,0]),('w',[.5,0,0]),('s',[-.3,0,0]),('q',[.3,0,.3]),('e',[.3,0,-.3])]:
+            trial=self.trial(walk_speed=.5,continuous=True,left_speed=.4)
+            previous=np.zeros(3)
+            for i in range(1,41):
+                now=8+i*.02;trial.feed_key(key,now);value=trial.velocity_profile(now)
+                self.assertLessEqual(float(np.max(abs(value-previous))),.020001)
+                previous=value
+            np.testing.assert_allclose(value,target,atol=1e-6)
+            trial.controller.set_velocity_command(value)
+            np.testing.assert_allclose(trial.controller.command,target,atol=1e-6)
+            self.assertEqual(trial.controller.config.data['command_limits'][1],.4)
+            self.assertEqual(trial.config.data['command_limits'][1],.3)
+            self.assertEqual((trial.policy_pd_limit,trial.torque_limit),(14.,16.))
+            trial.feed_key('x',9.);np.testing.assert_array_equal(trial.velocity_profile(9.),0.)
+        self.assertEqual(self.config.data['command_limits'],original_limits)
+
+    def test_left_speed_candidate_uses_guarded_lowering_only_after_use(self):
+        trial=self.trial(continuous=True,left_speed=.4);trial.policy_command=object()
+        self.assertTrue(trial.request_normal_exit(9.))
+        self.assertEqual(trial.lower_begin,11.)
+        trial=self.trial(continuous=True,left_speed=.4);self.hold(trial,'a',8.,.6)
+        self.assertTrue(trial.left_candidate_used)
+        trial.policy_command=object();self.assertTrue(trial.request_normal_exit(9.))
+        self.assertEqual(trial.lower_begin,17.)
+        self.assertEqual(trial.duration,28.)
+        self.assertIsNotNone(trial.controlled_lowering)
+        with self.assertRaises(ValueError):entry.commission_arguments('all','eno1',Path('zero.jsonl'),motion_seconds=4,left_speed=.4)
+
+    def test_left_speed_is_explicit_and_propagates_to_child(self):
+        argv=entry.commission_arguments('all','eno1',Path('zero.jsonl'),walk_speed=.5,left_speed=.4)
+        with patch('sys.stdin.isatty',return_value=True):args=commission.parse_args(argv)
+        self.assertEqual(args.left_speed,.4)
+        self.assertEqual(args.walk_speed,.5)
+        self.assertEqual(args.action_step_mode,'limit')
+        self.assertNotIn('--left-speed',entry.commission_arguments('all','eno1',Path('zero.jsonl')))
+        with self.assertRaises(ValueError):entry.commission_arguments('lateral','eno1',Path('zero.jsonl'),left_speed=.4)
+        with self.assertRaises(ValueError):entry.commission_arguments('all','eno1',Path('zero.jsonl'),action_step_mode='reject',left_speed=.4)
+        with self.assertRaises(SystemExit):commission.parse_args(argv+['--gait-restart'])
+        with self.assertRaises(SystemExit):commission.parse_args(argv+['--velocity-feedback','pi'])
 
     def test_walk_speed_changes_only_w_with_same_slew_and_stop(self):
         for key, target in [('w',[.5,0,0]),('s',[-.3,0,0]),('a',[0,.3,0]),('d',[0,-.3,0]),('q',[.3,0,.3]),('e',[.3,0,-.3])]:

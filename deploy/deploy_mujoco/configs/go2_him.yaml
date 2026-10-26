@@ -1,0 +1,19 @@
+policy_path: '{LEGGED_GYM_ROOT_DIR}/deploy/pre_train/go2_him/policy.pt'
+deploy_config_path: '{LEGGED_GYM_ROOT_DIR}/deploy/pre_train/go2_him/deploy.yaml'
+xml_path: '{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/mjcf/scene_flat.xml'
+simulation_duration: 30.0
+simulation_dt: 0.001
+command:
+- 0.5
+- 0.0
+- 0.0
+model_overrides:
+  joint_damping: 0.0
+  armature: 0.0
+  friction_loss: 0.0
+  sliding_friction: 1.0
+  torsional_friction: 0.0
+  rolling_friction: 0.0
+fall_height: 0.12
+fall_tilt: 1.0
+realtime: false

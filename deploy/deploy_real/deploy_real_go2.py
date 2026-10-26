@@ -1,6 +1,7 @@
 """Go2真机部署程序：配置、状态机、安全、控制、DDS和记录。"""
 
 import argparse
+import hashlib
 import json
 import os
 import select
@@ -13,13 +14,14 @@ import tty
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 import numpy as np
 import torch
 import yaml
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
-from deploy.common.go2_policy import action_to_target, build_observation, projected_gravity, resolve_path
+from deploy.common.go2_policy import action_to_target, build_observation, projected_gravity, resolve_path, validate_policy_config, PolicyObservationHistory
 
 
 GO2_SERVO_MODE = 0x01  # Unitree Go2 low-level examples use PMSM/FOC mode 0x01.
@@ -113,6 +115,7 @@ class Go2RealConfig:
     stiffness: np.ndarray
     damping: np.ndarray
     torque_limits: np.ndarray
+    source_sha256: str = ""
 
     @classmethod
     def load(cls, path, root_dir):
@@ -120,10 +123,7 @@ class Go2RealConfig:
             data = yaml.safe_load(stream)
         if not isinstance(data, dict) or data.get("robot") != "go2":
             raise ValueError("真机配置必须声明robot: go2")
-        if data.get("format_version") != 1:
-            raise ValueError("只支持format_version: 1的Go2真机配置")
-        if (int(data["policy"]["num_actions"]), int(data["policy"]["num_observations"])) != (12, 45):
-            raise ValueError("Go2真机部署只接受12动作/45观测策略")
+        validate_policy_config(data)
         mapping = np.asarray(data["policy"]["policy_to_sdk"], dtype=np.int64)
         if sorted(mapping.tolist()) != list(range(12)):
             raise ValueError("policy_to_sdk必须是0到11的完整排列")
@@ -132,6 +132,7 @@ class Go2RealConfig:
             raise ValueError("step_dt必须为正有限数")
         return cls(
             data=data,
+            source_sha256=hashlib.sha256(Path(path).read_bytes()).hexdigest(),
             policy_path=resolve_path(data["policy_path"], root_dir),
             control_dt=control_dt,
             policy_to_sdk=mapping,
@@ -357,12 +358,14 @@ class Go2Controller:
         self.last_policy_fault = None
         self.last_policy_observation = None
         self.last_action = np.zeros(12, dtype=np.float32)
+        self.previous_policy_action = np.zeros(12, dtype=np.float32)
+        self.observation_history = PolicyObservationHistory(config.data)
         self.last_step_time = None
         self.command = np.zeros(3, dtype=np.float32)
 
     def validate_policy(self):
         with torch.inference_mode():
-            output = self.policy(torch.zeros((1, 45), dtype=torch.float32))
+            output = self.policy(torch.zeros((1, int(self.config.data["policy"]["num_observations"])), dtype=torch.float32))
         action = output.detach().cpu().numpy().reshape(-1)
         if action.shape != (12,) or not np.isfinite(action).all():
             raise ValueError(f"策略输出无效: shape={action.shape}")
@@ -385,11 +388,22 @@ class Go2Controller:
         q, _ = self._policy_joint_state(state)
         return self.fsm.enter_fix_stand(now, q)
 
+    def reset_policy_state(self):
+        self.last_action.fill(0.)
+        self.previous_policy_action.fill(0.)
+        self.observation_history.reset()
+        self.last_policy_observation = None
+
     def request_policy(self, now):
-        return self.fsm.enter_policy(now)
+        previous = self.fsm.mode
+        entered = self.fsm.enter_policy(now)
+        if entered and previous is not Go2Mode.POLICY:
+            self.reset_policy_state()
+        return entered
 
     def emergency_stop(self, now, reason="用户急停"):
         self.fsm.emergency_damping(now, reason)
+        self.reset_policy_state()
 
     def _damping_command(self, state, reason=""):
         return Go2Command(
@@ -407,15 +421,19 @@ class Go2Controller:
             self.command,
             q,
             dq,
-            self.last_action,
+            self.previous_policy_action if self.config.data.get("format_version") == 2 else self.last_action,
             self.config.data,
         )
+        observation = self.observation_history.append(observation)
         self.last_policy_observation = observation.copy()
         with torch.inference_mode():
             tensor = torch.tensor(observation.tolist(), dtype=torch.float32).unsqueeze(0)
             output = self.policy(tensor)
         action = output.detach().cpu().numpy().reshape(-1).astype(np.float32)
-        return action, action_to_target(action, self.config.data)
+        target = action_to_target(action, self.config.data)
+        self.previous_policy_action = np.clip(action, -self.config.data["actions"]["clip"],
+                                               self.config.data["actions"]["clip"]).copy()
+        return action, target
 
     def process_policy_action(self, action):
         """约束有限且幅值合法的动作变化；幅值异常仍交由原保护拒绝。"""

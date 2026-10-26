@@ -134,6 +134,8 @@ def get_args():
         {"name": "--num_envs", "type": int, "help": "Number of environments to create. Overrides config file if provided."},
         {"name": "--seed", "type": int, "help": "Random seed. Overrides config file if provided."},
         {"name": "--max_iterations", "type": int, "help": "Maximum number of training iterations. Overrides config file if provided."},
+        {"name": "--export_only", "action": "store_true", "default": False,
+         "help": "In play.py, export the selected checkpoint without playback."},
     ]
     # parse arguments
     args = gymutil.parse_arguments(
@@ -148,7 +150,10 @@ def get_args():
     return args
 
 def export_policy_as_jit(actor_critic, path):
-    if hasattr(actor_critic, 'memory_a'):
+    if hasattr(actor_critic, 'estimator') and hasattr(actor_critic, 'num_one_step_obs'):
+        from legged_gym.envs.go2_him.export import export_him_policy
+        return export_him_policy(actor_critic, path)
+    elif hasattr(actor_critic, 'memory_a'):
         # assumes LSTM: TODO add GRU
         exporter = PolicyExporterLSTM(actor_critic)
         exporter.export(path)

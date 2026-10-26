@@ -85,9 +85,10 @@ class KeyboardEntryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'baseline.json'; path.write_text(json.dumps(manifest))
             with patch.object(entry,'BASELINE',path), patch.object(entry.Go2RealConfig,'load'), \
-                 patch.object(entry,'verify_baseline'), patch.object(entry,'validate_readiness',return_value=trial), \
+                 patch.object(entry,'verify_baseline'), patch.object(entry,'validate_readiness',return_value=trial) as readiness, \
                  patch.object(commission,'run') as run, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(entry.main([]), 0)
+                self.assertEqual(readiness.call_args.args[-4:],(.5,'limit',.4,'uniform'))
                 with patch('sys.stdin.isatty',return_value=True), patch('builtins.input',return_value='cancel'):
                     self.assertEqual(entry.main(['--run']), 0)
                 run.assert_not_called()

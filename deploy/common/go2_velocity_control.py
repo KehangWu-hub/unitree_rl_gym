@@ -1,4 +1,4 @@
-"""Simulation-only three-axis velocity feedback. Never imported by real control."""
+"""Three-axis velocity PI plus a separate simulation-only stance controller."""
 import numpy as np
 
 

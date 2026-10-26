@@ -8,3 +8,8 @@ from .base.legged_robot import LeggedRobot
 from legged_gym.utils.task_registry import task_registry
 
 task_registry.register("go2", Go2Robot, GO2RoughCfg(), GO2RoughCfgPPO())
+
+from .go2_him.go2_him_config import Go2HIMCfg, Go2HIMCfgPPO
+from .go2_him.go2_him_env import Go2HIMRobot
+
+task_registry.register("go2_him", Go2HIMRobot, Go2HIMCfg(), Go2HIMCfgPPO())

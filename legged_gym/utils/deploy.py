@@ -64,6 +64,34 @@ def export_deploy_config(env, path, robot_name):
         },
     }
 
+    if hasattr(env, "num_one_step_obs"):
+        # Version 2 requires a temporal runtime; the legacy 45-D loader rejects it.
+        cfg["format_version"] = 2
+        cfg["policy"].update(
+            architecture="him",
+            num_one_step_observations=int(env.num_one_step_obs),
+            history_length=int(env.history_length),
+            history_order="newest_first",
+            history_reset="zero_previous_frames",
+            estimated_velocity_scale=float(env.obs_scales.lin_vel),
+            latent_size=16,
+            observation_clip=float(env.cfg.normalization.clip_observations),
+        )
+        by_name = {term["name"]: term for term in cfg["observations"]}
+        cfg["observations"] = [by_name[name] for name in (
+            "velocity_commands", "base_ang_vel", "projected_gravity",
+            "joint_pos_rel", "joint_vel", "last_action")]
+        cfg["policy"]["last_action_semantics"] = "previous_clipped_policy_action"
+        hip_reduction = float(env.cfg.control.hip_reduction)
+        if hip_reduction != 1.0:
+            cfg["actions"]["scale"] = [float(env.cfg.control.action_scale) *
+                (hip_reduction if "hip" in name else 1.0) for name in joint_names]
+        cfg["training_source"] = {
+            "repository": "https://github.com/1170632760/HIMLOCO_GO2",
+            "commit": "2e70bcf66d2a479add5a688ed4d78d863d166c11",
+            "task": "go2_him",
+        }
+
     output_path = os.path.join(path, "deploy.yaml")
     with open(output_path, "w", encoding="utf-8") as stream:
         yaml.safe_dump(cfg, stream, sort_keys=False)

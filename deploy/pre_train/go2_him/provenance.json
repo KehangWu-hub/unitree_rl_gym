@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/1170632760/HIMLOCO_GO2",
+  "commit": "2e70bcf66d2a479add5a688ed4d78d863d166c11",
+  "source_file": "legged_gym/deploy/pre_train/go2/policy.pt",
+  "policy_sha256": "178eb57b6a0024cb949a964ea7892f622f12929a5698637d847d57d5cd4ab627",
+  "model_origin": "upstream pretrained HIM encoder and actor; unmodified weights",
+  "input": 270,
+  "encoder_output": 19,
+  "latent": 16,
+  "actor_input": 64,
+  "output": 12,
+  "local_training_candidate": "logs/go2_him/Oct26_15-46-47_phase2_warmstart/model_300.pt",
+  "local_training_candidate_selected": false,
+  "local_training_note": "300-iteration fine-tuning candidate failed MuJoCo tracking and action protection; upstream weights selected for deployment validation."
+}

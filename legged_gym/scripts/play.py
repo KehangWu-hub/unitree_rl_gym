@@ -25,6 +25,11 @@ def play(args):
 
     # Keep interactive playback in real time; headless validation should run as fast as possible.
     env_cfg.env.test = not args.headless
+    # HIM adds further randomization terms, all disabled for deterministic playback.
+    for field in ("disturbance", "randomize_payload_mass", "randomize_com_displacement",
+                  "randomize_link_mass", "randomize_kp", "randomize_kd", "randomize_motor_strength"):
+        if hasattr(env_cfg.domain_rand, field):
+            setattr(env_cfg.domain_rand, field, False)
 
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
@@ -40,12 +45,15 @@ def play(args):
         export_policy_as_jit(ppo_runner.alg.actor_critic, path)
         print('Exported policy as jit script to: ', path)
         params_path = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported', 'params')
-        deploy_cfg_path = export_deploy_config(env, params_path, args.task)
+        deploy_cfg_path = export_deploy_config(env, params_path, "go2")
         print('Exported deployment config to: ', deploy_cfg_path)
+
+    if args.export_only:
+        return
 
     for i in range(10*int(env.max_episode_length)):
         actions = policy(obs.detach())
-        obs, _, rews, dones, infos = env.step(actions.detach())
+        obs, _, rews, dones, infos = env.step(actions.detach())[:5]
 
 if __name__ == '__main__':
     EXPORT_POLICY = True

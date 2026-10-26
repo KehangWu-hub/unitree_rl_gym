@@ -1,0 +1,27 @@
+{
+  "repository": "https://github.com/1170632760/HIMLOCO_GO2",
+  "commit": "2e70bcf66d2a479add5a688ed4d78d863d166c11",
+  "original_repository": "https://github.com/InternRobotics/HIMLoco",
+  "original_commit": "ef289acaa62795009363b7b819c9186690630441",
+  "original_python_sha256": {
+    "__init__.py": "5c70c5a865ae3a49f5201bfc873678548b69f3b0ddec4d00bcf8bf28bb24f33d",
+    "env/__init__.py": "b4c617f8535f521496d62b4b057e6523a6d2f83520e3c0ce3a0c2ee0ef028b5c",
+    "env/vec_env.py": "6e8f46bec6a4081f4248f010bf5641f71b51cdbaa0282bce76e6ef5580caace7",
+    "algorithms/him_ppo.py": "65ba76bfd9145c55a2b3c8df47b280fa38e76e3004c9a149f4913a8a6a7fb20b",
+    "algorithms/__init__.py": "505a46aa19deb45dc3df3a6402d8544c2a751f020870e04632f3ccb5ab03def8",
+    "algorithms/ppo.py": "33d531858767e49bbffce8030ac2879a30a00a64caeef0f87502285fa15301cd",
+    "runners/him_on_policy_runner.py": "90dae5f69be4437edc0401520c2b85e1ef4b8e8bae3468de0fe469236e34e4ca",
+    "runners/__init__.py": "de0ee4dbd46834248a4a68a704caa9132dd0d8c64fcb8b9a9a49634d7851e54e",
+    "runners/on_policy_runner.py": "3a704d0cdf74c4637dc34e25660de122308a0443a0a91eff03b1bbcafe3fb8d7",
+    "storage/__init__.py": "9a444069b471b5abaa0b6d0a69fdab198def06ad10b5bc5a337e42e1e5b95594",
+    "storage/him_rollout_storage.py": "971369bb58bdc43e737f317f5ae57443df8f46de463597ee732150c5389bfd9a",
+    "storage/rollout_storage.py": "0ad19bda4b39f06b869426a70462d438a46fdbffcf91d21a247eb203c049128e",
+    "utils/utils.py": "c883c535b2a7eda3ffdc2200505a4ae36dc12cdcf9fc6d306eb2b30f64f202fc",
+    "utils/__init__.py": "6a29eb8996bfc2a2d799282851f6d23fbe446a9e743ad1aeb8031026c101183c",
+    "modules/him_actor_critic.py": "c516cb3b7bc3b6734182547bacaa6eb6fb0604fac9a0708ff87d869a79c17cc6",
+    "modules/__init__.py": "af90e783dc7d5970156f03aca7af8cea9c6ba767066b06fdbdebdce8334c1557",
+    "modules/actor_critic_recurrent.py": "db5eeb05c963e5ab61829b076a7360ce9441deb0441cca7e08d214623cadce3c",
+    "modules/him_estimator.py": "a0cb97016fce9714168f357358dd50d0fb2eaba0017fe37ed5bbc469727024d2",
+    "modules/actor_critic.py": "7113dd5cfcc8a7220400b50e07a33fd7261cea31c781728156051ea36af0b991"
+  }
+}

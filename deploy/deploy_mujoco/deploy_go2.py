@@ -13,6 +13,7 @@ import yaml
 from legged_gym import LEGGED_GYM_ROOT_DIR
 # MuJoCo 和真机共用的观测构造、姿态转换及动作解码函数。
 from deploy.common.go2_policy import (
+    PolicyObservationHistory,
     action_to_target,
     build_observation,
     load_deploy_config,
@@ -105,6 +106,7 @@ def run(args):
     # 初始“上一次动作”为零；策略第一次运行前的关节目标为默认姿态。
     action = np.zeros(int(deploy_cfg["policy"]["num_actions"]), dtype=np.float32)
     target_pos = default_pos.copy()
+    history = PolicyObservationHistory(deploy_cfg)
 
     duration = float(args.duration or runtime["simulation_duration"])
     total_steps = int(round(duration / model.opt.timestep))
@@ -147,10 +149,13 @@ def run(args):
                 obs = build_observation(
                     ang_vel, gravity, command, data.qpos[qpos_ids], data.qvel[qvel_ids], action, deploy_cfg
                 )
-                # 策略输入形状为 [1, 45]；输出是 12 个动作，再换算成目标关节角。
+                obs = history.append(obs)
+                # HIM输入270维历史；旧策略输入45维单帧。
                 with torch.inference_mode():
                     action = policy(torch.from_numpy(obs).unsqueeze(0)).cpu().numpy().reshape(-1)
                 target_pos = action_to_target(action, deploy_cfg)
+                if deploy_cfg.get("format_version") == 2:
+                    action = np.clip(action, -deploy_cfg["actions"]["clip"], deploy_cfg["actions"]["clip"])
 
                 # 记录稳定性指标；高度过低或倾斜过大时提前结束仿真。
                 height = float(data.qpos[2])

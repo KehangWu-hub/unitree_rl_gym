@@ -125,6 +125,9 @@ celerybeat.pid
 .env
 .venv
 env/
+# This env directory is HIM's source interface, not a virtual environment.
+!third_party/himloco_rsl_rl/rsl_rl/env/
+!third_party/himloco_rsl_rl/rsl_rl/env/*.py
 venv/
 ENV/
 env.bak/

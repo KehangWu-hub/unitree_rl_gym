@@ -2,11 +2,11 @@
 
 面向 Unitree Go2 的强化学习运动控制项目，包含 Isaac Gym 训练、MuJoCo 仿真验证和基于 Unitree SDK2 / DDS 的真机部署工具。
 
-项目使用同一套观测与动作接口，将训练得到的策略导出为 TorchScript，并用于仿真和实体机器人推理。键盘控制支持前进、后退、左右侧移、行进中转向和速度归零。
+项目支持原有 PPO 策略和 HIM 策略。各策略的观测顺序、历史和控制参数随 TorchScript 一起导出，MuJoCo 与真机共用部署接口。键盘控制支持前进、后退、左右侧移、行进中转向和速度归零。
 
 > 基于 [Unitree 官方 unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) 开发，专注 Go2。本项目为独立开发项目，不代表 Unitree 官方实现或背书。
 
-[环境安装](doc/setup_zh.md) · [真机部署](deploy/deploy_real/README_GO2.zh.md)
+[环境安装](doc/setup_zh.md) · [真机部署](deploy/deploy_real/README_GO2.zh.md) · [HIM部署与验收](deploy/deploy_real/README_GO2_HIM.zh.md)
 
 | Isaac Gym | MuJoCo | 真机 |
 |:---:|:---:|:---:|
@@ -14,7 +14,7 @@
 
 ## 特性
 
-- **可部署的训练结构**：45 维 Actor 使用 IMU、关节状态、速度指令和动作历史；60 维 Critic 在训练时使用额外的仿真信息。
+- **两种训练结构**：原 PPO 使用45维Actor观测；HIM使用六帧历史估计3维速度和16维隐变量，再输入64维Actor。Critic额外信息仅用于训练。
 - **一致的策略接口**：训练导出观测顺序、缩放、关节映射和控制参数，MuJoCo 与真机共用观测构造及动作转换。
 - **完整的仿真路径**：支持 Python MuJoCo、官方 DDS 仿真闭环、速度指令和外力扰动测试。
 - **受限真机控制**：提供站姿接管、键盘运动、速度归零、受控降低、阻尼停止及运行日志。
@@ -22,8 +22,8 @@
 ## 工作流程
 
 ```text
-Isaac Gym / PPO
-    │  导出 Actor + deploy.yaml
+Isaac Gym / PPO 或 HIM
+    │  导出完整推理模型 + deploy.yaml
     ▼
 TorchScript 策略
     ├── MuJoCo：运动与稳定性验证
@@ -31,16 +31,24 @@ TorchScript 策略
     └── Go2：只读检查 → 站姿接管 → 受限运动
 ```
 
-| 策略参数 | 配置 |
-|---|---|
-| Actor / Critic 输入 | 45 / 60 维 |
-| 动作输出 | 12 个关节位置动作 |
-| 策略周期 | 20 ms（50 Hz） |
-| 动作缩放 | 0.25 |
-| 策略 PD 增益 | Kp = 20，Kd = 0.5 |
-| 预训练策略 | `deploy/pre_train/go2/motion.pt` |
+| 策略参数 | 原 PPO（`go2`） | HIM（`go2_him`） |
+|---|---|---|
+| 部署模型输入 | 45维单帧观测 | 270维历史（6 × 45，最新帧在前） |
+| Actor输入 | 45维 | 64维＝当前观测45＋估计速度3＋隐变量16 |
+| Critic输入（仅训练） | 60维 | 238维 |
+| 动作输出 | 12个关节位置动作 | 12个关节位置动作 |
+| 策略周期 | 20ms（50Hz） | 20ms（50Hz） |
+| 动作缩放 | 0.25 | 0.25 |
+| 策略PD增益 | Kp＝20，Kd＝0.5 | Kp＝20，Kd＝0.5 |
+| 预训练策略 | `deploy/pre_train/go2/motion.pt` | `deploy/pre_train/go2_him/policy.pt` |
 
-Critic 仅用于训练。部署时，Actor 根据三维速度指令生成关节目标，由 PD 控制执行。
+HIM结构如下。部署时只保留历史编码器和Actor；Target Encoder、对比学习和Critic参与训练。
+图中隐式状态在当前配置中为16维，另有3维显式速度估计。
+
+![HIM混合内部模型与策略训练结构](doc/images/HIM.png)
+
+HIM预训练权重来源及摘要见 [模型说明](deploy/pre_train/go2_him/README.md)。
+本地继续训练的候选模型须通过同一套仿真验收，才能替换部署权重。
 
 ## 目录用途
 
@@ -98,6 +106,25 @@ logs/rough_go2_45x60_rewards/exported/
 
 策略与 `deploy.yaml` 必须来自同一次导出。训练记录与导出目录不随 Git 分发；正式部署前应完成对应仿真验证。
 
+#### HIM训练任务
+
+`go2_him` 使用 Isaac Gym 和项目内固定版本的 HIMLoco 算法，输入为六帧45维观测；
+历史编码器估计速度与隐变量，和当前观测一起输入Actor。无需替换已安装的 `rsl_rl`。
+
+```bash
+python legged_gym/scripts/train.py --task go2_him --headless --num_envs 64
+python legged_gym/scripts/train.py --task go2_him --headless --num_envs 64 \
+  --resume --load_run RUN_DIRECTORY --checkpoint CHECKPOINT
+python legged_gym/scripts/play.py --task go2_him --headless --num_envs 16 \
+  --load_run RUN_DIRECTORY --checkpoint CHECKPOINT --export_only
+```
+
+环境数量可按显存调整。导出文件为 `logs/go2_him/exported/policies/policy.pt` 和
+`logs/go2_him/exported/params/deploy.yaml`。HIM导出包含编码器和Actor，参数文件使用
+时间序列接口版本2；部署时选择独立的 `go2_him.yaml`。原 `go2` 任务和真机模型路径保持独立。
+算法来源、许可证及本地适配说明见 [HIM依赖说明](third_party/himloco_rsl_rl/README.md)。
+HIM仿真复现、离线检查和现场验收命令见 [HIM部署指南](deploy/deploy_real/README_GO2_HIM.zh.md)。
+
 ### MuJoCo 仿真
 
 默认仿真配置使用上面的导出文件。准备好策略与参数后运行：
@@ -120,18 +147,24 @@ python deploy/deploy_mujoco/deploy_go2.py \
 
 程序输出位移、速度误差、机身高度、倾角和力矩等指标。模型路径与物理参数在 [MuJoCo 配置](deploy/deploy_mujoco/configs/go2.yaml) 中设置，也可通过 `--policy` 和 `--deploy-config` 指定成套导出文件。
 
-速度统计由上述仿真入口直接输出：`mean_body_velocity` 为机身坐标系平均速度，`velocity_error_xy` 为线速度误差。保留的 PI 补偿实现及参数见[速度观测与补偿说明](doc/velocity_tracking.md)；普通仿真入口不会自动启用这些补偿。
+速度统计由上述仿真入口直接输出：`mean_body_velocity` 为机身坐标系平均速度，`velocity_error_xy` 为线速度误差。保留的 PI 补偿实现及参数见[速度反馈运行说明](deploy/deploy_real/README_GO2.zh.md)；普通仿真入口不会自动启用这些补偿。
 
 ### 真机部署
 
-真机控制使用 `go2_keyboard`，默认统一接收 Q/W/E/A/S/D，X 将速度归零，也保留单方向检查模式。从原厂站稳接管后，统一模式默认持续运行，C 受控降低并退出，Z/Ctrl+C 或第二终端停止紧急阻尼退出；可用 `--motion-seconds 4` 或 `10` 选择自动归零和降低的短时检查。运动入口默认对合法动作做步长限幅，`--walk-speed 0.5` 可将 W 纯前进指令从默认 0.30m/s 调整为 0.50m/s。
+真机控制使用 `go2_keyboard`，默认统一接收 Q/W/E/A/S/D，X 将速度归零，也保留单方向检查模式。从原厂站稳接管后，统一模式默认持续运行，C 受控降低并退出，Z/Ctrl+C 或第二终端停止紧急阻尼退出；可用 `--motion-seconds 4` 或 `10` 选择自动归零和降低的短时检查。运动入口默认对合法动作做步长限幅。默认 W/S 为 ±0.50m/s、A/D 为 ±0.40m/s；Q/E 为前进 0.50m/s 加转向 ±0.50rad/s。这些是策略指令，实际速度取决于跟踪效果。
+
+历史单独 A 速度对照可显式使用 `--speed-profile legacy --walk-speed 0.5 --left-speed 0.4`，D保持0.30，见[速度对照步骤](deploy/deploy_real/README_GO2.zh.md#单独对照左移速度)。
+
+左移起步恢复候选可用 `--gait-restart`：检测到左移步态持续静止后，平滑回站姿并重新起步一次。使用与停止方法见[真机指南](deploy/deploy_real/README_GO2.zh.md#左移起步恢复候选)。
+
+原厂速度消息在当前低层接管后不可用。已接入关节与IMU运动学速度估计，首轮用 `--velocity-source kinematic --velocity-feedback shadow` 记录估计，保持普通控制输出；核对真机速度量级后再启用PI。可选仅 PI 候选的反馈检查、低速参数和运行步骤见[速度反馈运行说明](deploy/deploy_real/README_GO2.zh.md)。
 
 部署需要匹配当前模型与配置的站立、零速度前置记录；这些记录保存在本机，克隆仓库后需自行完成检查。连接、前置流程、运行命令及停止方法见 **[Go2 真机部署指南](deploy/deploy_real/README_GO2.zh.md)**。
 
 已激活 `unitree-rl` 环境且机器人原厂站稳时，运行：
 
 ```bash
-python -m deploy.deploy_real.go2_keyboard --walk-speed 0.5 --run
+python -m deploy.deploy_real.go2_keyboard --run
 ```
 
 | 按键 | 功能 |
@@ -140,7 +173,7 @@ python -m deploy.deploy_real.go2_keyboard --walk-speed 0.5 --run
 | A / D | 左移 / 右移 |
 | Q / E | 行进中左转 / 右转 |
 | X / 空格 | 停步，保持策略运行，可继续运动 |
-| C | 正常趴下并退出：归零 2 秒、降低 5 秒、稳定 2 秒、阻尼收尾 1 秒 |
+| C | 正常趴下并退出；运动后制动 2 秒、过渡站姿 2 秒、保持 4 秒、降低 8 秒、稳定 3 秒、阻尼收尾 1 秒 |
 | Z / Ctrl+C | 紧急终止，立即进入阻尼并退出 |
 
 C 用于默认持续模式，按一次即可；退出过程中仍可按 Z 紧急终止。可选短时检查自动降低，方向切换无需先按 X。
@@ -162,12 +195,14 @@ GO2_DDS_TESTS=1 python -m unittest discover -s tests -p test_go2_watchdog.py -v
 
 ```text
 legged_gym/                 Isaac Gym 环境、训练和策略导出
-  envs/go2/                Go2 配置与观测定义
+  envs/go2/                原 PPO 配置与观测定义
+  envs/go2_him/            HIM 环境、配置与完整模型导出
 deploy/
   common/                  共用策略接口
   deploy_mujoco/           MuJoCo 运行与诊断
   deploy_real/             DDS 通信、真机控制与日志
-  pre_train/go2/           冻结 TorchScript 模型
+  pre_train/go2/           原冻结 TorchScript 模型
+  pre_train/go2_him/       HIM 模型、接口与来源记录
 resources/robots/go2/      URDF、MJCF 与模型资产
 tests/                     Go2 软件与集成测试
 doc/                       安装与技术文档

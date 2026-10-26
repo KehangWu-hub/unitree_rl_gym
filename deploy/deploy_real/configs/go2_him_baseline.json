@@ -1,0 +1,11 @@
+{
+  "name": "Go2 HIM upstream pretrained, sim2sim validated; field commissioning pending",
+  "policy_path": "deploy/pre_train/go2_him/policy.pt",
+  "policy_sha256": "178eb57b6a0024cb949a964ea7892f622f12929a5698637d847d57d5cd4ab627",
+  "config_path": "deploy/deploy_real/configs/go2_him.yaml",
+  "config_sha256": "54db615cd0fd6a3b9a98784c96eb655dd6b2c68abc2f58adda197ab1fa9358f5",
+  "qualification_path": "logs/go2_him/qualification.json",
+  "qualification_sha256": "cc1ae778e020ca93176883e4b7dc1e4580c3496dadca405e825bffd5ed3e736c",
+  "readiness": {},
+  "physical_robot_validated": false
+}

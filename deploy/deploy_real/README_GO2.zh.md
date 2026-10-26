@@ -2,7 +2,7 @@
 
 本文介绍 Go2 策略部署的有线连接、前置检查、键盘控制和停止操作。所有命令均从项目根目录运行，使用项目的 `unitree-rl` Conda 环境，并确保已安装 `unitree_sdk2py`。
 
-[项目首页](../../README.md) · [环境安装](../../doc/setup_zh.md)
+[项目首页](../../README.md) · [环境安装](../../doc/setup_zh.md) · [HIM模型部署](README_GO2_HIM.zh.md)
 
 ## 运行前准备
 
@@ -94,27 +94,29 @@ python -m deploy.deploy_real.go2_keyboard \
   --network eno1 --readiness ZERO_JSONL --run
 ```
 
-默认 `all` 模式在同一轮接受 Q/W/E/A/S/D，无需重新启动来切换方向。W/S 前进或后退，A/D 左右侧移，默认平移指令上限为 0.30m/s。Q/E 向前移动并叠加左右转向，上限为 0.30m/s 和 ±0.30rad/s。
+默认 `all` 模式在同一轮接受 Q/W/E/A/S/D，无需重新启动切换方向：
 
-`--walk-speed 0.5` 将 W 纯前进指令设为 0.50m/s，仅适用于 `all` 模式。S/A/D 和 Q/E 保持各自的 0.30 指令上限。所有运动入口默认采用 `limit` 动作处理；显式 `--action-step-mode limit` 仍可使用。`reject` 仅保留对照用途，不允许与 0.50m/s 档组合。
+| 按键 | 策略速度指令 |
+|---|---|
+| W / S | 前进 / 后退 ±0.50m/s |
+| A / D | 左移 / 右移 ±0.40m/s |
+| Q / E | 前进 0.50m/s，同时转向 ±0.50rad/s |
 
-动作限幅先约束合法策略输出的步长，再计算满足角度与PD力矩范围的参考目标。按当前20ms周期、0.25动作缩放，每步动作最多0.64，对应参考角变化最多0.16rad；这是参考轨迹整形参数，不是实际关节速度上限。限幅后的动作进入下一周期last_action，原始动作另行记录。所有运动档的实际速度检查按关节取URDF与配置的交集，当前髋/大腿25rad/s、小腿20.07rad/s，不随W速度或方向改变。前进指令以1.0m/s²加速；指令不保证实际移动速度。
-
-例如先离线检查：
+默认采用 `uniform` 速度配置，运行时指令限幅为 `[0.5, 0.4, 0.5]`，不改写冻结的模型或原配置文件。日志记录 `speed_profile` 和 `effective_command_limits`。速度指令不等于实测速度。关节角度、速度、14Nm PD限幅、16Nm反馈保护及动作步长限幅保留。
 
 ```bash
-python -m deploy.deploy_real.go2_keyboard \
-  --walk-speed 0.5 --check
+python -m deploy.deploy_real.go2_keyboard --check
+python -m deploy.deploy_real.go2_keyboard --run
 ```
 
-每次只执行最后收到的方向键，不组合多个按键。方向改变时先归零一个策略周期，再向新方向加速。X/空格将所有速度分量归零；从转向切回平移时不会保留转向指令。
+`--speed-profile legacy` 保留旧指令和单项对照。单项速度对照需显式选择 `legacy`；日常控制请使用上面的简短命令。单轴和显式限时检查沿用历史速度，不属于新默认配置。
 
 统一模式默认持续运行：接管后第8秒开放按键，无累计运动预算、输入窗口末尾或自动降低时间。由用户按C正常退出，或按Z/Ctrl+C及第二终端紧急终止。X/空格只将速度归零，仍可继续输入其他方向。
 
 在已激活unitree-rl环境的项目目录终端中，可使用一行命令：
 
 ```bash
-python -m deploy.deploy_real.go2_keyboard --walk-speed 0.5 --run
+python -m deploy.deploy_real.go2_keyboard --run
 ```
 
 如需短时自动结束的检查，可显式选择`--motion-seconds 4`或`10`。短时模式中，切换方向或按X不会重置累计预算；预算耗尽后指令归零，输入窗口结束后自动降低。该选项仅作用于all模式。
@@ -165,6 +167,57 @@ python -m deploy.deploy_real.go2_keyboard \
 短时检查的预算耗尽或输入窗口结束都会强制归零，之后仍执行降低。测试 X 主动停走时，应在预算耗尽前按 X。流程正常结束后现场确认机器人已降低并停住；下一轮需重新恢复站立。
 
 Q/E 用于行进中转向，始终包含向前速度；此入口不提供原地转向。
+
+## 单独对照左移速度
+
+在 `legacy` 历史对照中，`--walk-speed`只改变W。若要在同样操作顺序下比较A的指令幅值，原厂站稳后可显式选择A=0.40候选：
+
+```bash
+python -m deploy.deploy_real.go2_keyboard --speed-profile legacy --walk-speed 0.5 --left-speed 0.4 --run
+```
+
+本轮W仍为0.50，D仍为0.30，仅A由0.30改为0.40。先按与上轮相同的前进/停步/后退/停步顺序，再短时试A，开始迈步就松开并按X；C正常降低，Z紧急停止。它是速度指令对照，不自动启用PI或起步恢复。此历史对照的默认A是0.30；新日常配置已将A/D统一为0.40。历史A=0.40仅支持持续模式，不能与PI或`--gait-restart`同时使用。用过A=0.40后，C先制动2秒、过渡站姿2秒、保持4秒，再降低8秒、稳定3秒并阻尼收尾；这是候选档的停止流程，正常运动没有新增时间预算。
+
+只有候选控制器的内存副本将y指令幅值允许至0.40；原go2.yaml、模型及关节/PD/力矩保护不变。日志`left_speed_mps`和`effective_command_limits`记录实际生效参数，便于区分不同工况。仿真中的起步门槛不能直接当作真机最小速度，仍需现场确认。
+
+## 左移起步恢复候选
+
+若持续按A时没有形成迈腿动作，可显式启用一次站姿恢复。原厂站稳后运行：
+
+```bash
+python -m deploy.deploy_real.go2_keyboard --speed-profile legacy --walk-speed 0.5 --gait-restart --run
+```
+
+它使用关节运动检测左移步态停滞，不依赖原厂机身速度或足端反馈。检测到停滞后，终端会提示回站姿；站稳后平滑重新接入策略。需要继续左移时保持A输入，看到开始迈步后松开A并按X。恢复后仍未形成步态，本次左移自动归零，不会循环重试；X或明确切到其他方向后才允许新一次尝试。
+
+X取消继续左移；恢复过程中C优先取消重新起步，并在完成站姿过渡后降低退出；Z及第二终端停止始终有效。正常控制无新增累计运动预算。该候选需短时实机复验，不默认开启；暂不与PI组合，可与shadow观测组合。W/S/D/Q/E保持原控制。实现与检测条件见[停滞处理说明](../../doc/velocity_tracking.md#左移停滞处理)。
+
+## 可选速度观测与 PI 候选
+
+原厂速度消息在当前低层接管后不可用。现已接入 `kinematic`：仅用LowState的关节位置、关节速度、四元数和IMU角速度估算机身速度，不使用MuJoCo机身速度真值、接触真值或足端修正力矩。MuJoCo在此仅计算机器人的正运动学和雅可比。根据足端相对高度选择支撑腿，权重高度尺度0.001m；地面打滑和模型误差仍需真机核对。
+
+机器人原厂站稳后，首轮运行下面命令，仅记录估计，保持普通键盘输出：
+
+```bash
+python -m deploy.deploy_real.go2_keyboard --velocity-source kinematic --velocity-feedback shadow --run
+```
+
+按W/S/A/D/Q/E分别观察，X停步；用地面距离和计时核对直线、侧移速度方向及量级，C正常趴下，Z急停。日志路径由终端打印，保存在 `logs/go2_real/commission/`。检查该日志：
+
+```bash
+python -m deploy.deploy_real.go2_velocity_diagnostics --analyze 日志路径.jsonl
+```
+
+连续性通过后，还必须确认估计方向和速度量级；`publication_ready`不表示精度合格。确认后，PI离线检查及启动命令如下，日志必须替换为刚才真实观测文件：
+
+```bash
+python -m deploy.deploy_real.go2_keyboard --velocity-source kinematic --velocity-feedback pi --velocity-readiness 日志路径.jsonl --check
+# 离线检查通过且估计量级核对正常后，再将 --check 换成 --run。
+```
+
+PI保持按键目标W/S=±0.5、A/D=±0.4、Q/E=(0.5,0,±0.5)，每轴修正最多0.1；仅PI模式的策略内部指令限幅为 `[0.6,0.5,0.6]`，普通及shadow仍为 `[0.5,0.4,0.5]`。这组补偿边界是项目候选值，位于冻结策略训练导出的各轴[-1,1]范围内，不是宇树硬件速度规格。Kp/Ki=0.8/0.8，配置在 [go2_velocity_pi.yaml](configs/go2_velocity_pi.yaml)。不对未请求的轴额外施加运动修正；X、超时和换方向清积分，LowState过期、tick倒退或估计无效进入原停止链路。
+
+PI前置日志必须来自同一模型、配置、估计器、速度配置和PI参数版本，接管后连续至少5秒；模拟日志不能替代真机观测和速度量级核对。默认不启用PI。C沿用受控退出，关节范围、关节速度、姿态、14Nm PD及16Nm反馈力矩保护不变。历史原厂速度源和低速PI候选仍通过 `--speed-profile legacy --velocity-source sport` 保留。
 
 ## 停止与原厂模式恢复
 
@@ -234,7 +287,7 @@ Actor 不使用基座线速度。60 维 Critic 在训练时额外使用仿真线
 
 可直接从一个方向键切换到另一个方向键，不要求中间按X。换向会先将指令归零一个20ms周期，再向新方向加速；这不保证机身已物理停稳。X用于主动停走。
 
-显式短时模式结束前执行计划内降低；默认持续模式按C正常退出：接管完成后的策略阶段接受C，速度归零2秒，再沿用5秒降低及2秒稳定，最后一秒阻尼收尾；C重复输入不会重置过程，期间方向键不再接受。Z/Ctrl+C或独立停止可随时紧急终止。故障和紧急终止立即进入阻尼。阻尼取消主动位置支撑，可能下沉，不等于站立刹停。故障停止保持锁存，不自动恢复站立。日志中的`policy_joint_velocity_limits_sdk_rad_s`保存逐关节上限，`policy_limits_version`标识限制实现版本；历史日志不因此扩大已验证范围。
+显式短时模式结束前执行计划内降低；默认持续模式按C正常退出：接管完成后的策略阶段接受C，新配置执行过运动后，制动2秒、过渡站姿2秒、保持4秒、降低8秒、稳定3秒，最后一秒阻尼收尾；未运动及历史普通档仍沿用2秒归零、5秒降低、2秒稳定；C重复输入不会重置过程，期间方向键不再接受。Z/Ctrl+C或独立停止可随时紧急终止。故障和紧急终止立即进入阻尼。阻尼取消主动位置支撑，可能下沉，不等于站立刹停。故障停止保持锁存，不自动恢复站立。日志中的`policy_joint_velocity_limits_sdk_rad_s`保存逐关节上限，`policy_limits_version`标识限制实现版本；历史日志不因此扩大已验证范围。
 
 
 ## 运行日志与复核
