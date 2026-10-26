@@ -21,5 +21,4 @@ MuJoCo仿真配置位于 `deploy/deploy_mujoco/configs/go2_him.yaml`，
 同步更新 `provenance.json` 中的训练记录与模型摘要，并重新执行仿真和现场验收。
 训练、导出及验收命令见 [HIM部署指南](../../deploy_real/README_GO2_HIM.zh.md)。
 
-许可证声明保存在 `third_party/himloco_rsl_rl/HIMLoco_LICENSE` 中（相对于项目根目录）；
-第三方算法文件保留各自的原始版权和许可证声明。
+相关版权与许可证文本见仓库根目录的 [第三方声明](../../../THIRD_PARTY_NOTICES.md)。

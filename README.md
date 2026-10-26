@@ -122,7 +122,7 @@ python legged_gym/scripts/play.py --task go2_him --headless --num_envs 16 \
 环境数量可按显存调整。导出文件为 `logs/go2_him/exported/policies/policy.pt` 和
 `logs/go2_him/exported/params/deploy.yaml`。HIM导出包含编码器和Actor，参数文件使用
 时间序列接口版本2；部署时选择独立的 `go2_him.yaml`。原 `go2` 任务和真机模型路径保持独立。
-算法来源、许可证及本地适配说明见 [HIM依赖说明](third_party/himloco_rsl_rl/README.md)。
+HIM训练算法基于作者发布的 [HIMLoco官方实现](https://github.com/InternRobotics/HIMLoco)，本项目进行了Go2环境和部署适配。
 HIM仿真复现、离线检查和现场验收命令见 [HIM部署指南](deploy/deploy_real/README_GO2_HIM.zh.md)。
 
 ### MuJoCo 仿真
@@ -212,4 +212,4 @@ doc/                       安装与技术文档
 
 本项目建立在 [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym)、[legged_gym](https://github.com/leggedrobotics/legged_gym)、[rsl_rl](https://github.com/leggedrobotics/rsl_rl)、[MuJoCo](https://github.com/google-deepmind/mujoco)、[unitree_mujoco](https://github.com/unitreerobotics/unitree_mujoco) 和 [unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python) 之上。
 
-本仓库采用 [BSD 3-Clause License](LICENSE)。第三方代码及资产遵循各自的许可证。
+本仓库采用 [BSD 3-Clause License](LICENSE)。第三方代码及资产遵循各自的许可证，相关声明集中在 [第三方声明](THIRD_PARTY_NOTICES.md)。
