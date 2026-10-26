@@ -47,7 +47,7 @@ HIM结构如下。部署时只保留历史编码器和Actor；Target Encoder、�
 
 ![HIM混合内部模型与策略训练结构](doc/images/HIM.png)
 
-HIM预训练权重来源及摘要见 [模型说明](deploy/pre_train/go2_him/README.md)。
+HIM模型接口与权重替换方法见 [模型说明](deploy/pre_train/go2_him/README.md)。
 本地继续训练的候选模型须通过同一套仿真验收，才能替换部署权重。
 
 ## 目录用途
