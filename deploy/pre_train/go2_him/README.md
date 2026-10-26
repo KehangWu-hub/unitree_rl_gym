@@ -20,5 +20,3 @@ MuJoCo仿真配置位于 `deploy/deploy_mujoco/configs/go2_him.yaml`，
 后续训练完成后，导出完整的HIM模型，替换 `policy.pt` 及对应接口配置，
 同步更新 `provenance.json` 中的训练记录与模型摘要，并重新执行仿真和现场验收。
 训练、导出及验收命令见 [HIM部署指南](../../deploy_real/README_GO2_HIM.zh.md)。
-
-相关版权与许可证文本见仓库根目录的 [第三方声明](../../../THIRD_PARTY_NOTICES.md)。

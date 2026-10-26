@@ -4,8 +4,6 @@
 
 项目支持原有 PPO 策略和 HIM 策略。各策略的观测顺序、历史和控制参数随 TorchScript 一起导出，MuJoCo 与真机共用部署接口。键盘控制支持前进、后退、左右侧移、行进中转向和速度归零。
 
-> 基于 [Unitree 官方 unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) 开发，专注 Go2。本项目为独立开发项目，不代表 Unitree 官方实现或背书。
-
 [环境安装](doc/setup_zh.md) · [真机部署](deploy/deploy_real/README_GO2.zh.md) · [HIM部署与验收](deploy/deploy_real/README_GO2_HIM.zh.md)
 
 | Isaac Gym | MuJoCo | 真机 |
@@ -122,7 +120,6 @@ python legged_gym/scripts/play.py --task go2_him --headless --num_envs 16 \
 环境数量可按显存调整。导出文件为 `logs/go2_him/exported/policies/policy.pt` 和
 `logs/go2_him/exported/params/deploy.yaml`。HIM导出包含编码器和Actor，参数文件使用
 时间序列接口版本2；部署时选择独立的 `go2_him.yaml`。原 `go2` 任务和真机模型路径保持独立。
-HIM训练算法基于作者发布的 [HIMLoco官方实现](https://github.com/InternRobotics/HIMLoco)，本项目进行了Go2环境和部署适配。
 HIM仿真复现、离线检查和现场验收命令见 [HIM部署指南](deploy/deploy_real/README_GO2_HIM.zh.md)。
 
 ### MuJoCo 仿真
@@ -202,14 +199,10 @@ deploy/
   deploy_mujoco/           MuJoCo 运行与诊断
   deploy_real/             DDS 通信、真机控制与日志
   pre_train/go2/           原冻结 TorchScript 模型
-  pre_train/go2_him/       HIM 模型、接口与来源记录
+  pre_train/go2_him/       HIM 模型、接口与版本记录
 resources/robots/go2/      URDF、MJCF 与模型资产
 tests/                     Go2 软件与集成测试
 doc/                       安装与技术文档
 ```
 
-## 来源与许可证
-
-本项目建立在 [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym)、[legged_gym](https://github.com/leggedrobotics/legged_gym)、[rsl_rl](https://github.com/leggedrobotics/rsl_rl)、[MuJoCo](https://github.com/google-deepmind/mujoco)、[unitree_mujoco](https://github.com/unitreerobotics/unitree_mujoco) 和 [unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python) 之上。
-
-本仓库采用 [BSD 3-Clause License](LICENSE)。第三方代码及资产遵循各自的许可证，相关声明集中在 [第三方声明](THIRD_PARTY_NOTICES.md)。
+本项目基于 [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) 和 [HIMLoco](https://github.com/InternRobotics/HIMLoco) 等开源实现开发，许可证见 [LICENSE](LICENSE)。
