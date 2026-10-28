@@ -2,7 +2,7 @@
 
 面向 Unitree Go2 的强化学习运动控制项目，覆盖 **Isaac Gym训练 → MuJoCo仿真 → 真机键盘控制**。支持PPO和HIM两种策略，训练导出的模型与接口参数用于仿真和真机部署。
 
-[安装](doc/setup_zh.md) · [HIM训练与部署](deploy/deploy_real/README_GO2_HIM.zh.md) · [PPO真机控制](deploy/deploy_real/README_GO2.zh.md) · [模型接口](deploy/pre_train/go2_him/README.md)
+[安装](doc/setup_zh.md) · [HIM训练与部署](deploy/deploy_real/README_GO2_HIM.zh.md) · [PPO真机控制](deploy/deploy_real/README_GO2.zh.md)
 
 | Isaac Gym | MuJoCo | Go2真机 |
 |:---:|:---:|:---:|
