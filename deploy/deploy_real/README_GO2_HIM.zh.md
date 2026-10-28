@@ -1,98 +1,133 @@
-# Go2 HIM 仿真与真机验收
+# Go2 HIM训练与部署
 
-## 当前运行方式
+[项目首页](../../README.md) · [环境安装](../../doc/setup_zh.md) · [模型接口](../pre_train/go2_him/README.md)
 
-- 外加14Nm计算PD投影、16Nm反馈停止、动作幅值/步长限幅、目标角裁剪及关节速度/跟踪阈值仍不应用于当前直接目标模式。
-- 独立摔倒保护始终检查横滚/俯仰，默认阈值0.35rad（约20度），不受`software_motion_limits`影响。接管、策略、C退出与独立看门狗覆盖，触发后锁定Kp=0、Kd=3阻尼；不能继续执行策略或降低轨迹。
-- 当前直接目标模式不做速度裁剪、组合指令白名单、键盘加速/换向限制。
-- 保留模型本身的预处理与有界输出、20ms推理周期、PD20/0.5、关节映射、启动插值和C受控降低。键盘0.30档是输入指令设置，不作为控制器裁剪上限。
-- 保留手动X/C/Z/Ctrl+C、DDS CRC/消息来源核对、有限数值检查和失联/心跳处理。没有修改机器人固件，也不把URDF参数冒充实测固件保护范围。
-- 旧配置中的限制仅用于历史复现；当前模型包里的14Nm/0.64字段记录训练时的约束，在`software_motion_limits: false`运行时不应用。
-
-使用 `unitree-rl` 环境，从项目根目录运行。HIM模型位于 `deploy/pre_train/go2_him_fresh/`，
-模型记录及SHA256保存在该目录的 `provenance.json` 中。替换训练权重后，需要重新完成下述仿真与部署验收。
-完整模型输入270维历史，内部估计3维速度和16维隐变量，Actor输入64维、输出12维。
-
-## 仿真与离线检查
+本指南介绍HIM训练、导出、MuJoCo运行和真机键盘控制。所有命令从项目根目录执行：
 
 ```bash
 conda activate unitree-rl
 export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
-export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-python -m deploy.deploy_real.check_go2_him --config deploy/deploy_real/configs/go2_him_fresh.yaml --output logs/go2_him_fresh/phase3_preflight/summary.json
 ```
 
-此检查不初始化DDS。它核对模型、历史观测、关节映射、SDK CRC、推理耗时和停止保护，
-并验证仿真报告与模型、配置及控制代码的摘要一致。结果在 `logs/go2_him_fresh/phase3_preflight/summary.json`。
-更换权重或修改控制代码后，需要重新生成仿真证据。
+## 训练
 
-重跑完整仿真验收：先停止训练，单独完成Isaac Gym评估，再执行MuJoCo测试。
+使用混合地形训练配置：
 
 ```bash
-python legged_gym/scripts/evaluate_him.py --task go2_him_retrain --policy-path deploy/pre_train/go2_him_fresh/policy.pt --output-path logs/go2_him_fresh/phase2_validation/isaac.json --headless --num_envs 64
-python legged_gym/scripts/evaluate_him_candidate.py --policy-path deploy/pre_train/go2_him_fresh/policy.pt --command-profile keyboard --output-path logs/go2_him_fresh/phase2_validation/isaac_acceptance.json --headless --num_envs 64
-python -m deploy.deploy_mujoco.validate_go2_him --config deploy/deploy_real/configs/go2_him_fresh.yaml --output logs/go2_him_fresh/phase2_validation/final_raw
-python -m deploy.deploy_mujoco.validate_go2_him --config deploy/deploy_real/configs/go2_him_fresh.yaml --protected --keys zero w s a d q e switch --output logs/go2_him_fresh/phase2_validation/final_protected
-python -m deploy.deploy_mujoco.validate_go2_him --config deploy/deploy_real/configs/go2_him_fresh.yaml --protected --stage zero --output logs/go2_him_fresh/phase2_validation/zero_stage
-python -m deploy.deploy_mujoco.validate_go2_him --config deploy/deploy_real/configs/go2_him_fresh.yaml --protected --stage forward --output logs/go2_him_fresh/phase2_validation/forward_stage
-python -m deploy.deploy_mujoco.validate_go2_him --config deploy/deploy_real/configs/go2_him_fresh.yaml --protected --long-trial --output logs/go2_him_fresh/phase2_validation/final_long_keyboard
-cp logs/go2_him_fresh/phase2_validation/final_long_keyboard/summary.json logs/go2_him_fresh/phase2_validation/mujoco_acceptance.json
-python -m deploy.deploy_mujoco.validate_go2_him --config deploy/deploy_real/configs/go2_him_fresh.yaml --output logs/go2_him_fresh/phase2_validation --qualify
-python -m deploy.deploy_real.check_go2_him --config deploy/deploy_real/configs/go2_him_fresh.yaml --output logs/go2_him_fresh/phase3_preflight/summary.json
+python legged_gym/scripts/train_him_from_scratch.py \
+  --profile candidate-rough --run-dir logs/him/my_run \
+  --headless --num_envs 1024 --max_iterations 3000 --seed 42
 ```
 
-普通可视化使用：
+| 参数 | 作用 |
+|---|---|
+| `--profile candidate-rough` | 混合地形与地形课程 |
+| `--profile candidate-flat` | 对应的平地配置 |
+| `--num_envs` | 并行环境数，按显存选择 |
+| `--max_iterations` | 本次训练轮数 |
+| `--run-dir` | 独立运行目录，每次新训练使用新目录 |
+| `--background` | 后台运行，输出写入运行目录 |
+
+运行目录保存配置、源码快照、TensorBoard记录和断点；训练结束后导出：
+
+```text
+logs/him/my_run/
+├── env.yaml
+├── train.yaml
+├── progress.json
+├── model_3000.pt
+└── exported/
+    ├── policies/policy.pt
+    └── params/deploy.yaml
+```
+
+从已完成的运行继续训练到总计5000轮：
 
 ```bash
-python -m deploy.deploy_mujoco.deploy_go2 --config deploy/deploy_mujoco/configs/go2_him_fresh.yaml
+python legged_gym/scripts/continue_him_training.py \
+  --source-run logs/him/my_run --run-dir logs/him/my_run_extended \
+  --target-iteration 5000 --background
 ```
 
-HIM运行配置将扭转和滚动摩擦设为0，与Isaac Gym实际形状参数一致；滑动摩擦为1。
-物理步长1ms，控制发布周期2ms，策略周期20ms。验收覆盖平地、0.30m/s平移、0.30rad/s行进转向、换方向、X归零、C降低和Z停止。
-50秒性能测试采用与Isaac Gym一致的严格门槛：平均身高至少0.28m、最低0.23m、最大倾角0.35rad；
-线速度RMSE不超过0.07m/s、偏航RMSE不超过0.12rad/s；停止后平移不超过0.03m/s、偏航不超过0.05rad/s。
-短程控制流程报告仍保留原有流程门槛，必须与严格性能报告一起通过。
+原PPO及基础HIM任务也可通过通用入口运行：`python legged_gym/scripts/train.py --task go2_him --headless`。
 
-`keyboard`评估只覆盖实际单键接口，Q/E反向时保持前进并交换转向方向。
-C退出期间继续运行零速平衡策略，并逐渐切换到静态站姿，再降低。
+## MuJoCo运行
 
-## 上电后的现场顺序
-
-仿真报告不替代现场记录。现场上电、连接有线网卡并准备停止终端后，先只读检查：
+先用仓库附带的配套模型运行：
 
 ```bash
-python -m deploy.deploy_real.deploy_real_go2 eno1 --config deploy/deploy_real/configs/go2_him_fresh.yaml --read-only --duration 5
+python -m deploy.deploy_mujoco.deploy_go2 \
+  --config deploy/deploy_mujoco/configs/go2_him_fresh.yaml \
+  --command 0.3 0 0
 ```
 
-之后从原厂站稳姿态进行独立站姿接管、保持和降低验收。以下命令会产生实体运动：
+使用自己的训练结果时，成套指定模型和接口参数：
 
 ```bash
-python -m deploy.deploy_real.go2_commission eno1 --config deploy/deploy_real/configs/go2_him_fresh.yaml --stand-check --start-standing --confirm-standing --release-mode --allow-body-movement
+python -m deploy.deploy_mujoco.deploy_go2 \
+  --config deploy/deploy_mujoco/configs/go2_him_fresh.yaml \
+  --policy logs/him/my_run/exported/policies/policy.pt \
+  --deploy-config logs/him/my_run/exported/params/deploy.yaml \
+  --command 0.3 0 0
 ```
 
-使用本次站姿验收输出的JSONL，执行零速策略接管：
+`--command VX VY WZ`分别是前进、侧移和偏航指令。可添加 `--headless --no-realtime --duration 10` 输出无窗口仿真统计。
+
+## 真机键盘控制
+
+机器人通过网线连接电脑，从原厂站稳姿态接管；现场保持空旷，并准备停止终端。下文网卡以 `eno1` 为例，替换为实际有线网卡名。
+
+选择仓库中的一组HIM配置与模型清单：
 
 ```bash
-python -m deploy.deploy_real.go2_commission eno1 --config deploy/deploy_real/configs/go2_him_fresh.yaml --policy-check NEW_STAND.jsonl --start-standing --confirm-standing --release-mode --allow-body-movement --allow-policy-movement
+HIM_CONFIG=deploy/deploy_real/configs/go2_him_fresh.yaml
+HIM_BASELINE=deploy/deploy_real/configs/go2_him_fresh_baseline.json
 ```
 
-HIM零速流程共30秒：5秒接管、2秒保持、2秒零速策略、4秒回站姿、4秒保持、8秒降低、5秒稳定，
-随后阻尼收尾。零速策略也可能迈步或漂移。使用本次通过的零速JSONL，先检查键盘入口：
+检查配置与模型，不初始化DDS：
 
 ```bash
-python -m deploy.deploy_real.go2_keyboard --config deploy/deploy_real/configs/go2_him_fresh.yaml --baseline deploy/deploy_real/configs/go2_him_fresh_baseline.json --readiness NEW_ZERO.jsonl --mode all --check
+python -m deploy.deploy_real.go2_keyboard \
+  --config "$HIM_CONFIG" --baseline "$HIM_BASELINE" --check
 ```
 
-现场再次确认原厂站稳和停止终端可用后，以相同参数将 `--check` 换为 `--run` 才启动。
-当前HIM入口采用0.30平移/行进转向档，PI和起步恢复候选关闭。Q/E边走边转，W/S前后，A/D侧移；
-X或空格归零，C受控退出，Z或Ctrl+C紧急阻尼。
-C流程为制动2秒、回站姿4秒、保持4秒、降低8秒、稳定5秒，再阻尼收尾1秒。
+机器人连接后，可只读检查状态：
 
-独立停止终端：
+```bash
+python -m deploy.deploy_real.deploy_real_go2 eno1 \
+  --config "$HIM_CONFIG" --read-only --duration 5
+```
+
+启动键盘控制：
+
+```bash
+python -m deploy.deploy_real.go2_keyboard \
+  --network eno1 --config "$HIM_CONFIG" --baseline "$HIM_BASELINE" --run
+```
+
+根据终端提示输入 `START`，待按键窗口开启后控制。切换模型时，配置和清单必须成套选择。
+
+| 按键 | 指令或操作 |
+|---|---|
+| W / S | 前进 / 后退，±0.30m/s |
+| A / D | 左移 / 右移，±0.30m/s |
+| Q / E | 前进0.30m/s，同时转向±0.30rad/s |
+| X / 空格 | 速度归零，策略继续运行 |
+| C | 受控降低并退出 |
+| Z / Ctrl+C | 立即切换阻尼并退出 |
+
+最后一个方向键生效；主动停步使用X或空格。独立倾角保护触发后锁定阻尼，受控退出过程中仍可按Z停止。
+
+第二终端停止命令：
 
 ```bash
 python -m deploy.deploy_real.go2_watchdog --stop --domain-id 0
 ```
 
-当前运行方式见开头；不再使用14/16Nm和额外运动阈值。
-现场数据写入 `logs/go2_him_fresh/real/`，原有Go2模型和配置继续使用各自独立路径。
+恢复原厂模式及网络说明见[PPO部署指南](README_GO2.zh.md#停止与恢复原厂模式)。
+
+## 替换部署权重
+
+HIM部署包包含 `policy.pt`、`deploy.yaml` 和 `provenance.json`。真机使用的完整YAML配置还包括网卡、控制及停止参数；模型包的 `deploy.yaml` 不能直接替代它。
+
+更换权重时，同步更新模型包、真机YAML中的接口字段及匹配的baseline摘要。真机配置中的部署状态字段控制模型是否允许启动。接口细节见[模型说明](../pre_train/go2_him/README.md)。

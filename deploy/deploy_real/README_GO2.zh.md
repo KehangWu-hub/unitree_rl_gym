@@ -1,52 +1,49 @@
-# Go2 真机部署指南
+# Go2 PPO真机控制
 
-本文介绍 Go2 策略部署的有线连接、前置检查、键盘控制和停止操作。所有命令均从项目根目录运行，使用项目的 `unitree-rl` Conda 环境，并确保已安装 `unitree_sdk2py`。
+[项目首页](../../README.md) · [环境安装](../../doc/setup_zh.md) · [HIM训练与部署](README_GO2_HIM.zh.md)
 
-[项目首页](../../README.md) · [环境安装](../../doc/setup_zh.md) · [HIM模型部署](README_GO2_HIM.zh.md)
+本指南对应 `configs/go2.yaml` 和PPO部署模型。HIM使用独立的配置与模型清单，见[HIM指南](README_GO2_HIM.zh.md)。所有命令从项目根目录执行。
 
-## 运行前准备
+## PPO训练与导出
+
+训练需要安装Isaac Gym及rsl-rl：
+
+```bash
+python legged_gym/scripts/train.py \
+  --task go2 --headless --num_envs 1024 --max_iterations 1500
+
+python legged_gym/scripts/play.py \
+  --task go2 --headless --load_run RUN_DIRECTORY --checkpoint 1500 --export_only
+```
+
+将 `RUN_DIRECTORY` 替换为本次训练的目录名。程序打印导出的模型和 `deploy.yaml` 路径，部署时使用这组配套文件。
+
+## 连接与准备
 
 ```bash
 conda activate unitree-rl
 export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
-机器人应处于平坦空地，网线保持松弛，有人在旁观察，并准备独立的停止终端。每次主动控制前确认当前姿态；键盘运动从原厂站稳开始，不从卧倒姿态直接启动。
+通过网线连接机器人，使用同一子网内的电脑地址，DDS domain为0。下文使用 `eno1`，请替换为实际有线网卡。机器人应处于平坦空地，原厂站稳，现场有人观察且可停止。
 
-真机使用有线网卡和 DDS domain 0。下文以 `eno1` 为例，请替换成实际网卡。测试进程不可与其他自定义 LowCmd 发布程序同时运行。
-
-控制器接管后会释放原厂运动服务，手机 App 的运动控制可能暂时不可用。主动停止使用键盘或下文的停止终端。软件停止仍依赖电脑、进程和通信，不能覆盖电脑断电或完整物理断链。
-
-## 检查模型和连接
-
-先检查配置与策略模型，不初始化 DDS：
+检查本地模型与配置：
 
 ```bash
-python deploy/deploy_real/deploy_real_go2.py --check
+python -m deploy.deploy_real.deploy_real_go2 --check
 ```
 
-只读取机器人状态，不创建电机发布器：
+只读查看机器人状态：
 
 ```bash
-python deploy/deploy_real/deploy_real_go2.py eno1 --read-only --duration 12
+python -m deploy.deploy_real.deploy_real_go2 eno1 --read-only --duration 5
 ```
 
-原厂已站稳时，可用真实状态计算策略目标，仍不下发命令：
+## 首次配置
 
-```bash
-python deploy/deploy_real/deploy_real_go2.py eno1 \
-  --read-only --shadow-policy --duration 12 --command 0 0 0
-```
+PPO键盘入口需要匹配当前模型的站姿和零速记录。记录由本机生成，程序输出实际JSONL路径。
 
-`deploy_real_go2.py` 的实体网卡入口仅允许只读操作。主动真机流程由 `go2_keyboard` 和 `go2_commission` 执行。
-
-## 首次建立前置记录
-
-`go2_keyboard` 会核对模型、配置和前置日志。[基线清单](configs/go2_verified_baseline.json) 保存模型、配置和前置记录的摘要；运行日志保存在本地，不随仓库分发。新环境需依次完成站姿接管和零速度策略检查，再将产生的实际日志路径传入后续命令。
-
-### 1. 站姿接管
-
-先由原厂模式让机器人站稳，确认现场和停止终端就绪：
+站姿接管：
 
 ```bash
 python -m deploy.deploy_real.go2_commission eno1 \
@@ -54,37 +51,18 @@ python -m deploy.deploy_real.go2_commission eno1 \
   --release-mode --allow-body-movement
 ```
 
-程序等待连续一秒站稳后接管：5 秒过渡至训练站姿、2 秒保持、5 秒降低、2 秒稳定，随后发送 1 秒阻尼。不运行策略，不自动恢复原厂模式。
-
-检查现场结果，并分析程序输出的日志文件：
+流程结束后，按下文恢复原厂模式并重新站稳。将 `STAND_JSONL` 替换为上一步生成的日志路径，运行零速策略：
 
 ```bash
-python -m deploy.deploy_real.go2_commission --analyze STAND_JSONL
-```
-
-将 `STAND_JSONL` 替换为本轮实际路径。日志与现场均通过后，再进行下一步。
-
-### 2. 零速度策略
-
-按“恢复原厂模式”一节重新站稳，然后使用站立记录：
-
-```bash
-python -m deploy.deploy_real.go2_keyboard \
-  --network eno1 --mode zero --readiness STAND_JSONL --check
-
 python -m deploy.deploy_real.go2_keyboard \
   --network eno1 --mode zero --readiness STAND_JSONL --run
 ```
 
-在现场交互终端输入 `START`。该流程包含 5 秒接管、2 秒保持、2 秒零速度策略、5 秒降低、2 秒稳定及 1 秒阻尼。零速度目标仍可能引起迈步或漂移；此模式下 X、空格、Z 和 Ctrl+C 都进入阻尼停止。
+后续运动使用该步骤输出的 `ZERO_JSONL`。这些记录用于匹配模型与配置；更换模型后重新生成。
 
-分析生成的 `ZERO_JSONL`，并现场确认停止与收尾。运动流程使用这份零速度记录，要求其模型、配置、接管曲线和力矩参数匹配当前版本。
+## 键盘控制
 
-## 键盘运动
-
-每轮先恢复原厂站稳，保留观察人员及停止终端。已有匹配前置记录的本机可省略 `--readiness`；新环境使用自己的 `ZERO_JSONL`。
-
-### 统一控制入口
+恢复原厂站稳后，先检查配置与记录，再启动：
 
 ```bash
 python -m deploy.deploy_real.go2_keyboard \
@@ -94,247 +72,56 @@ python -m deploy.deploy_real.go2_keyboard \
   --network eno1 --readiness ZERO_JSONL --run
 ```
 
-默认 `all` 模式在同一轮接受 Q/W/E/A/S/D，无需重新启动切换方向：
+根据终端提示输入 `START`，待按键窗口开启后控制。已有匹配本机记录时可省略 `--readiness`。
 
-| 按键 | 策略速度指令 |
+| 按键 | 指令或操作 |
 |---|---|
-| W / S | 前进 / 后退 ±0.50m/s |
-| A / D | 左移 / 右移 ±0.40m/s |
-| Q / E | 前进 0.50m/s，同时转向 ±0.50rad/s |
+| W / S | 前进 / 后退，±0.50m/s |
+| A / D | 左移 / 右移，±0.40m/s |
+| Q / E | 前进0.50m/s，同时转向±0.50rad/s |
+| X / 空格 | 速度归零，策略继续运行 |
+| C | 受控降低并退出 |
+| Z / Ctrl+C | 阻尼停止并退出 |
 
-默认采用 `uniform` 速度配置，运行时指令限幅为 `[0.5, 0.4, 0.5]`，不改写冻结的模型或原配置文件。日志记录 `speed_profile` 和 `effective_command_limits`。速度指令不等于实测速度。关节角度、速度、14Nm PD限幅、16Nm反馈保护及动作步长限幅保留。
+默认持续运行至主动退出。Q/E包含前进速度；终端超过0.6秒未收到方向输入会归零，主动停步使用X或空格。接管期间由本项目控制器发送命令，手机App不作为停止入口。
 
-```bash
-python -m deploy.deploy_real.go2_keyboard --check
-python -m deploy.deploy_real.go2_keyboard --run
-```
+## 停止与恢复原厂模式
 
-`--speed-profile legacy` 保留旧指令和单项对照。单项速度对照需显式选择 `legacy`；日常控制请使用上面的简短命令。单轴和显式限时检查沿用历史速度，不属于新默认配置。
-
-统一模式默认持续运行：接管后第8秒开放按键，无累计运动预算、输入窗口末尾或自动降低时间。由用户按C正常退出，或按Z/Ctrl+C及第二终端紧急终止。X/空格只将速度归零，仍可继续输入其他方向。
-
-在已激活unitree-rl环境的项目目录终端中，可使用一行命令：
-
-```bash
-python -m deploy.deploy_real.go2_keyboard --run
-```
-
-如需短时自动结束的检查，可显式选择`--motion-seconds 4`或`10`。短时模式中，切换方向或按X不会重置累计预算；预算耗尽后指令归零，输入窗口结束后自动降低。该选项仅作用于all模式。
-
-### 单方向模式
-
-可用以下短时检查模式限制允许输入的方向键，前置记录与统一模式相同；这些模式沿用4秒预算和自动降低：
-
-| 模式 | 方向键 | 指令 |
-|---|---|---|
-| `--mode walk-turn` | Q/E | 前进 0.30m/s，加左右转向 0.30rad/s |
-| `--mode backward` | S | 后退 0.30m/s |
-| `--mode lateral` | A/D | 左右侧移 0.30m/s |
-
-例如仅启用侧移：
-
-```bash
-python -m deploy.deploy_real.go2_keyboard \
-  --network eno1 --mode lateral --readiness ZERO_JSONL --run
-```
-
-### 输入与时序
-
-统一模式接收全部方向键；单方向模式仅接收表中对应方向键。
-
-| 输入 | 作用 |
-|---|---|
-| Q / E | 行进中左转 / 右转 |
-| W / S | 前进 / 后退 |
-| A / D | 左移 / 右移 |
-| X / 空格 | 速度指令立即归零，策略继续运行 |
-| C | 持续模式正常退出：归零2秒，受控降低5秒、稳定2秒，然后退出 |
-| Z / Ctrl+C | 紧急终止，立即进入阻尼 |
-
-输入 `START` 后暂不操作 App。看到方向键窗口提示再按键，主动停走使用 X；不要依赖松键即时停止。终端输入超过 0.6 秒未更新会归零，速度加速过程由控制器限制。
-
-以下时序仅用于显式短时检查；默认持续模式在第8秒开放按键后一直等待用户退出。
-
-| 阶段 | 可选 4 秒档 | 可选 10 秒档 |
-|---|---|---|
-| 站姿接管与保持 | 0～7 秒 | 0～7 秒 |
-| 初始零速度策略 | 7～8 秒 | 7～8 秒 |
-| 键盘输入窗口 | 8～20 秒 | 8～26 秒 |
-| 归零观察 | 20～22 秒 | 26～28 秒 |
-| 降低与稳定 | 22～29 秒 | 28～35 秒 |
-| 阻尼收尾 | 随后 1 秒 | 随后 1 秒 |
-
-短时检查的预算耗尽或输入窗口结束都会强制归零，之后仍执行降低。测试 X 主动停走时，应在预算耗尽前按 X。流程正常结束后现场确认机器人已降低并停住；下一轮需重新恢复站立。
-
-Q/E 用于行进中转向，始终包含向前速度；此入口不提供原地转向。
-
-## 单独对照左移速度
-
-在 `legacy` 历史对照中，`--walk-speed`只改变W。若要在同样操作顺序下比较A的指令幅值，原厂站稳后可显式选择A=0.40候选：
-
-```bash
-python -m deploy.deploy_real.go2_keyboard --speed-profile legacy --walk-speed 0.5 --left-speed 0.4 --run
-```
-
-本轮W仍为0.50，D仍为0.30，仅A由0.30改为0.40。先按与上轮相同的前进/停步/后退/停步顺序，再短时试A，开始迈步就松开并按X；C正常降低，Z紧急停止。它是速度指令对照，不自动启用PI或起步恢复。此历史对照的默认A是0.30；新日常配置已将A/D统一为0.40。历史A=0.40仅支持持续模式，不能与PI或`--gait-restart`同时使用。用过A=0.40后，C先制动2秒、过渡站姿2秒、保持4秒，再降低8秒、稳定3秒并阻尼收尾；这是候选档的停止流程，正常运动没有新增时间预算。
-
-只有候选控制器的内存副本将y指令幅值允许至0.40；原go2.yaml、模型及关节/PD/力矩保护不变。日志`left_speed_mps`和`effective_command_limits`记录实际生效参数，便于区分不同工况。仿真中的起步门槛不能直接当作真机最小速度，仍需现场确认。
-
-## 左移起步恢复候选
-
-若持续按A时没有形成迈腿动作，可显式启用一次站姿恢复。原厂站稳后运行：
-
-```bash
-python -m deploy.deploy_real.go2_keyboard --speed-profile legacy --walk-speed 0.5 --gait-restart --run
-```
-
-它使用关节运动检测左移步态停滞，不依赖原厂机身速度或足端反馈。检测到停滞后，终端会提示回站姿；站稳后平滑重新接入策略。需要继续左移时保持A输入，看到开始迈步后松开A并按X。恢复后仍未形成步态，本次左移自动归零，不会循环重试；X或明确切到其他方向后才允许新一次尝试。
-
-X取消继续左移；恢复过程中C优先取消重新起步，并在完成站姿过渡后降低退出；Z及第二终端停止始终有效。正常控制无新增累计运动预算。该候选需短时实机复验，不默认开启；暂不与PI组合，可与shadow观测组合。W/S/D/Q/E保持原控制。实现与检测条件见[停滞处理说明](../../doc/velocity_tracking.md#左移停滞处理)。
-
-## 可选速度观测与 PI 候选
-
-原厂速度消息在当前低层接管后不可用。现已接入 `kinematic`：仅用LowState的关节位置、关节速度、四元数和IMU角速度估算机身速度，不使用MuJoCo机身速度真值、接触真值或足端修正力矩。MuJoCo在此仅计算机器人的正运动学和雅可比。根据足端相对高度选择支撑腿，权重高度尺度0.001m；地面打滑和模型误差仍需真机核对。
-
-机器人原厂站稳后，首轮运行下面命令，仅记录估计，保持普通键盘输出：
-
-```bash
-python -m deploy.deploy_real.go2_keyboard --velocity-source kinematic --velocity-feedback shadow --run
-```
-
-按W/S/A/D/Q/E分别观察，X停步；用地面距离和计时核对直线、侧移速度方向及量级，C正常趴下，Z急停。日志路径由终端打印，保存在 `logs/go2_real/commission/`。检查该日志：
-
-```bash
-python -m deploy.deploy_real.go2_velocity_diagnostics --analyze 日志路径.jsonl
-```
-
-连续性通过后，还必须确认估计方向和速度量级；`publication_ready`不表示精度合格。确认后，PI离线检查及启动命令如下，日志必须替换为刚才真实观测文件：
-
-```bash
-python -m deploy.deploy_real.go2_keyboard --velocity-source kinematic --velocity-feedback pi --velocity-readiness 日志路径.jsonl --check
-# 离线检查通过且估计量级核对正常后，再将 --check 换成 --run。
-```
-
-PI保持按键目标W/S=±0.5、A/D=±0.4、Q/E=(0.5,0,±0.5)，每轴修正最多0.1；仅PI模式的策略内部指令限幅为 `[0.6,0.5,0.6]`，普通及shadow仍为 `[0.5,0.4,0.5]`。这组补偿边界是项目候选值，位于冻结策略训练导出的各轴[-1,1]范围内，不是宇树硬件速度规格。Kp/Ki=0.8/0.8，配置在 [go2_velocity_pi.yaml](configs/go2_velocity_pi.yaml)。不对未请求的轴额外施加运动修正；X、超时和换方向清积分，LowState过期、tick倒退或估计无效进入原停止链路。
-
-PI前置日志必须来自同一模型、配置、估计器、速度配置和PI参数版本，接管后连续至少5秒；模拟日志不能替代真机观测和速度量级核对。默认不启用PI。C沿用受控退出，关节范围、关节速度、姿态、14Nm PD及16Nm反馈力矩保护不变。历史原厂速度源和低速PI候选仍通过 `--speed-profile legacy --velocity-source sport` 保留。
-
-## 停止与原厂模式恢复
-
-### 第二终端停止
-
-主动真机流程运行期间，在另一终端请求阻尼：
+第二终端可随时请求阻尼停止：
 
 ```bash
 python -m deploy.deploy_real.go2_watchdog --stop --domain-id 0
 ```
 
-X/空格是运动模式的速度归零，C 是受控降低后退出，Z/Ctrl+C 和第二终端请求是紧急阻尼停止。阻尼会使机身降低，两种操作的效果不同。
-
-### 恢复原厂模式
-
-流程退出后，原厂模式不会自动恢复。确认机器人已卧倒、静止且周围空旷，再执行：
+C正常降低后退出；Z、Ctrl+C和第二终端停止立即撤除位置支撑并进入阻尼。控制进程退出、机器人已趴稳后，恢复原厂模式：
 
 ```bash
 python -m deploy.deploy_real.go2_commission eno1 \
   --restore-normal --confirm-prone --allow-factory-stand
 ```
 
-**恢复 `normal` 可能立即让机器人站起。** 此命令最多等待 15 秒，要求新鲜且 CRC 有效的状态连续 1 秒满足静止低姿态条件，并检查停止接口已退出及当前模式，然后请求恢复原厂控制。超时提示会列出未满足的条件。只有在实际确认卧倒时才使用 `--confirm-prone`。
+恢复操作可能直接使机器人站起；完成后可重新使用App控制。
 
-原厂模式恢复后，可由 App 操作。每轮再次接管前重新确认站稳；不要在旧控制进程仍运行时恢复模式。
+## 模型与配置
 
-## 策略接口与配置
+| 文件 | 用途 |
+|---|---|
+| `deploy/pre_train/go2/motion.pt` | PPO部署模型 |
+| `deploy/deploy_real/configs/go2.yaml` | 真机模型路径、观测与控制参数 |
+| `deploy/deploy_real/configs/go2_verified_baseline.json` | 模型、配置和记录摘要 |
+| `logs/go2_real/` | 本地运行日志 |
 
-部署 Actor 接收 45 维观测，顺序与缩放如下：
+PPO输入为45维观测：角速度3、投影重力3、指令3、关节位置12、关节速度12、上一动作12。输出12维关节位置动作，参考目标为默认关节角加 `0.25 × 动作`。
 
-| 观测 | 维度 | 缩放 |
-|---|---|---|
-| 机身角速度 | 3 | 0.25 |
-| 投影重力 | 3 | 1.0 |
-| 前进、侧向、偏航指令 | 3 | 2.0 / 2.0 / 0.25 |
-| 关节位置相对默认角度 | 12 | 1.0 |
-| 关节速度 | 12 | 0.05 |
-| 上一策略动作 | 12 | 1.0 |
+策略关节顺序为FL/FR/RL/RR，SDK顺序为FR/FL/RR/RL，映射由共用策略接口处理。策略周期20ms，PD增益20/0.5；运行约束由所选配置与速度模式决定。
 
-Actor 不使用基座线速度。60 维 Critic 在训练时额外使用仿真线速度与关节力矩，不进入部署模型。策略输出 12 个关节位置动作，每 20ms 更新一次：
+## 可选工具
 
-```text
-关节参考目标 = 默认关节角 + 0.25 × 策略动作
-```
+| 入口 | 用途 |
+|---|---|
+| `go2_commission --analyze TRIAL_JSONL` | 分析本机控制日志 |
+| `go2_velocity_diagnostics --analyze TRIAL_JSONL` | 查看速度观测 |
+| `go2_policy_replay TRIAL_JSONL --output replay.json` | 离线回放策略输入输出 |
+| `go2_keyboard --velocity-source kinematic --velocity-feedback shadow` | 记录运动学速度估计 |
 
-策略关节顺序为 FL/FR/RL/RR，SDK 顺序为 FR/FL/RR/RL；每条腿依次为 hip、thigh、calf。观测构造与关节映射由[共用策略接口](../common/go2_policy.py)维护。导出的策略与参数必须配套；修改观测顺序、缩放、关节映射、默认角度、动作缩放、增益或周期后，应重新完成对应仿真及部署检查。
-
-真机配置位于 [configs/go2.yaml](configs/go2.yaml)。策略增益为 Kp20/Kd0.5，受限运动另使用 14Nm PD 输出限幅和 16Nm 反馈停止阈值。这些参数用于受限运行流程，不是原厂推荐值。降低后的末态跟踪门槛为：前进及行进转向 0.15rad；本轮执行过后退或侧移时为 0.25rad。
-
-参考关节目标先按模型范围裁剪，再投影到角度与PD力矩允许区间的交集；实际关节范围、姿态、通信和反馈力矩独立检查。limit模式的last_action使用步长处理后的动作，reject模式沿用原始动作；两者均不以PD限幅后的目标反算动作历史。更换模型或修改配置后，旧基线和前置日志不能直接沿用。
-
-运行中的限制按阶段区分，不能把站姿检查门槛当作步态速度上限：
-
-| 限制/触发条件 | 来源及适用阶段 | 处理 |
-|---|---|---|
-| 关节参考角范围 | 配置与Go2 URDF一致 | 裁剪参考角；实际角度超出范围及0.02rad测量余量时停止 |
-| 实际关节速度 | 运动策略：逐关节min(URDF, 配置25rad/s) | 超限停止并记录关节名、实测值和上限 |
-| 动作步长0.64 | 软件参考轨迹约束，所有运动策略默认limit | 限幅后继续，不因合法输出跳变直接阻尼 |
-| 动作幅值4.0、NaN/Inf | 部署输出有效性检查 | 仍停止，不用限幅隐藏异常输出 |
-| PD 14Nm、反馈16Nm | 项目受限运行配置，并非硬件额定范围 | PD先限幅；角度/PD无可行交集或反馈超限时停止 |
-| 内层PD 0.8×模型力矩 | 配置的最终命令检查 | 14Nm限幅后仍不满足时停止 |
-| 倾角0.35rad | 接管、策略、降低流程的稳定性门槛 | 超限停止；未当作机器人机械范围撤除 |
-| 关节速度2rad/s | 无运动指令的零速验收、站姿接管和降低阶段 | 超限停止；不用于运动策略阶段 |
-| 跟踪0.25rad；降低末态0.15/0.25rad | 站姿/降低流程完成条件 | 不满足则停止，不伪报正常完成 |
-| 状态/父进程心跳0.1秒、发布循环0.05秒 | 通信和执行有效性 | 停止；不再依赖失效的策略维持站姿 |
-| 按键超时、X、可选短时预算耗尽 | 输入及可选时间约束 | 速度指令归零，策略继续，随后按计划降低 |
-
-可直接从一个方向键切换到另一个方向键，不要求中间按X。换向会先将指令归零一个20ms周期，再向新方向加速；这不保证机身已物理停稳。X用于主动停走。
-
-显式短时模式结束前执行计划内降低；默认持续模式按C正常退出：接管完成后的策略阶段接受C，新配置执行过运动后，制动2秒、过渡站姿2秒、保持4秒、降低8秒、稳定3秒，最后一秒阻尼收尾；未运动及历史普通档仍沿用2秒归零、5秒降低、2秒稳定；C重复输入不会重置过程，期间方向键不再接受。Z/Ctrl+C或独立停止可随时紧急终止。故障和紧急终止立即进入阻尼。阻尼取消主动位置支撑，可能下沉，不等于站立刹停。故障停止保持锁存，不自动恢复站立。日志中的`policy_joint_velocity_limits_sdk_rad_s`保存逐关节上限，`policy_limits_version`标识限制实现版本；历史日志不因此扩大已验证范围。
-
-
-## 运行日志与复核
-
-运行记录保存在本机 `logs/go2_real/`，主动验收记录在 `logs/go2_real/commission/`。日志包含模型与配置摘要、输入事件、策略目标、关节反馈及停止原因；足端字段为未校准原始整数。
-
-足端原始字段未提供单位换算、足序映射和校准，不能直接作为牛顿或精确接触力，也不能依赖 `foot_force_est` 判断承重。
-
-```bash
-# 分析本轮流程
-python -m deploy.deploy_real.go2_commission --analyze TRIAL_JSONL
-
-# 回放策略输出，不连接机器人
-python -m deploy.deploy_real.go2_policy_replay TRIAL_JSONL --output replay.json
-
-# 只读采集足端原始字段与IMU
-python -m deploy.deploy_real.go2_contact_diagnostics --network eno1
-```
-
-日志分析确认软件流程；机身实际运动和停止需由现场观察或独立位姿测量确认。出现通信超时、姿态异常、撞限位或异常声响时停止测试，检查日志后再处理，不通过放宽阈值掩盖故障。
-
-## 仿真与离线诊断
-
-DDS 仿真使用回环网卡和非零 domain，与真机 domain 0 分离。需先启动兼容的 MuJoCo / DDS 桥接：
-
-```bash
-python deploy/deploy_real/deploy_real_go2.py lo \
-  --domain-id 1 --simulation-auto --duration 12 --command 0.3 0 0
-```
-
-`--simulation-auto` 不允许用于实体网卡。无需 DDS 的受限键盘流程检查：
-
-```bash
-python -m deploy.deploy_mujoco.validate_go2_keyboard --unified
-```
-
-此检查覆盖六个单方向及跨轴、前后和左右转向切换，需要匹配的本机前置记录，可用 `--readiness ZERO_JSONL` 指定；省略 `--unified` 则只检查后退/侧移模式。报告分别评价流程、指令检查和运动效果；默认运动窗口实际/指令距离比门槛为 0.5，仅作为电脑端工程判据。
-
-仿真报告分别记录指令、实际运动和停止结果。运动效果需结合距离、速度和姿态评价；仿真结果与真机现场检查分别记录。
-
-专项调试还提供 `go2_commission --joint-check`、`--response-test` 与 `--damping-test`。它们用于受限关节响应或停止链路检查，须按各自的姿态、幅度和时长约束执行，不能作为直接启动行走的替代步骤。
-
-
-持续入口的电脑端仿真使用同一个仓库脚本。例如验证W、X与C受控降低：
-
-```bash
-python deploy/deploy_mujoco/validate_go2_keyboard.py --unified --continuous --keys w --walk-speed 0.5 --exit-time 20
-```
-
-`--exit-key z`改为模拟紧急终止；`--exit-time`只决定电脑端仿真何时触发退出。仿真没有图形窗口，输出流程、运动效果及日志检查，不代表真机通过。
+以上入口均位于 `deploy.deploy_real`，通过 `python -m deploy.deploy_real.<入口>` 使用。参数说明可通过对应入口的 `--help` 查看。
