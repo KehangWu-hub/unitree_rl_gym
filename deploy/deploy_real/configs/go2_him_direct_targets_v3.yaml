@@ -1,0 +1,240 @@
+robot: go2
+format_version: 2
+policy_path: '{LEGGED_GYM_ROOT_DIR}/deploy/pre_train/go2_him_direct_targets_v3/policy.pt'
+step_dt: 0.020000000949949026
+policy:
+  num_observations: 270
+  num_actions: 12
+  joint_names:
+  - FL_hip_joint
+  - FL_thigh_joint
+  - FL_calf_joint
+  - FR_hip_joint
+  - FR_thigh_joint
+  - FR_calf_joint
+  - RL_hip_joint
+  - RL_thigh_joint
+  - RL_calf_joint
+  - RR_hip_joint
+  - RR_thigh_joint
+  - RR_calf_joint
+  sdk_joint_names:
+  - FR_hip_joint
+  - FR_thigh_joint
+  - FR_calf_joint
+  - FL_hip_joint
+  - FL_thigh_joint
+  - FL_calf_joint
+  - RR_hip_joint
+  - RR_thigh_joint
+  - RR_calf_joint
+  - RL_hip_joint
+  - RL_thigh_joint
+  - RL_calf_joint
+  policy_to_sdk:
+  - 3
+  - 4
+  - 5
+  - 0
+  - 1
+  - 2
+  - 9
+  - 10
+  - 11
+  - 6
+  - 7
+  - 8
+  architecture: him
+  num_one_step_observations: 45
+  history_length: 6
+  history_order: newest_first
+  history_reset: zero_previous_frames
+  estimated_velocity_scale: 2.0
+  latent_size: 16
+  observation_clip: 100.0
+  last_action_semantics: previous_clipped_policy_action
+  action_distribution: scaled_tanh_normal
+  action_bound: 4.0
+observations:
+- name: velocity_commands
+  size: 3
+  scale:
+  - 2.0
+  - 2.0
+  - 0.25
+- name: base_ang_vel
+  size: 3
+  scale: 0.25
+- name: projected_gravity
+  size: 3
+  scale: 1.0
+- name: joint_pos_rel
+  size: 12
+  scale: 1.0
+- name: joint_vel
+  size: 12
+  scale: 0.05
+- name: last_action
+  size: 12
+  scale: 1.0
+actions:
+  type: joint_position
+  scale: 0.25
+  clip: 4.0
+  default_joint_pos:
+  - 0.10000000149011612
+  - 0.800000011920929
+  - -1.5
+  - -0.10000000149011612
+  - 0.800000011920929
+  - -1.5
+  - 0.10000000149011612
+  - 1.0
+  - -1.5
+  - -0.10000000149011612
+  - 1.0
+  - -1.5
+control:
+  stiffness:
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  damping:
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  torque_limits:
+  - 23.700000762939453
+  - 23.700000762939453
+  - 35.54999923706055
+  - 23.700000762939453
+  - 23.700000762939453
+  - 35.54999923706055
+  - 23.700000762939453
+  - 23.700000762939453
+  - 35.54999923706055
+  - 23.700000762939453
+  - 23.700000762939453
+  - 35.54999923706055
+  joint_target_mode: direct
+dds:
+  domain_id: 0
+  lowcmd_topic: rt/lowcmd
+  lowstate_topic: rt/lowstate
+  subscriber_queue: 10
+command_limits:
+- 0.3
+- 0.3
+- 0.3
+fsm:
+  stand_duration: 5.0
+  stand_kp:
+  - 40.0
+  - 40.0
+  - 40.0
+  - 40.0
+  - 40.0
+  - 40.0
+  - 40.0
+  - 40.0
+  - 40.0
+  - 40.0
+  - 40.0
+  - 40.0
+  stand_kd:
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  damping_duration: 1.0
+  damping_kd: 3.0
+safety:
+  state_timeout: 0.1
+  max_loop_dt: 0.05
+  max_roll: 0.8
+  max_pitch: 0.8
+  max_joint_velocity: 25.0
+  max_action: 4.0
+  max_action_delta: 1.0
+  torque_limit_ratio: 0.8
+  policy_target_mode: clip
+  state_joint_margin: 0.02
+  joint_lower:
+  - -1.0472
+  - -1.5708
+  - -2.7227
+  - -1.0472
+  - -1.5708
+  - -2.7227
+  - -1.0472
+  - -0.5236
+  - -2.7227
+  - -1.0472
+  - -0.5236
+  - -2.7227
+  joint_upper:
+  - 1.0472
+  - 3.4907
+  - -0.83776
+  - 1.0472
+  - 3.4907
+  - -0.83776
+  - 1.0472
+  - 4.5379
+  - -0.83776
+  - 1.0472
+  - 4.5379
+  - -0.83776
+  fall_tilt_limit_rad: 0.35
+recording:
+  enabled: true
+  directory: '{LEGGED_GYM_ROOT_DIR}/logs/go2_him_direct_targets_v3/real'
+  flush_interval: 50
+commands:
+  lin_vel_x:
+  - -0.5
+  - 0.5
+  lin_vel_y:
+  - -0.35
+  - 0.35
+  ang_vel_yaw:
+  - -0.5
+  - 0.5
+training_source:
+  repository: https://github.com/1170632760/HIMLOCO_GO2
+  commit: 2e70bcf66d2a479add5a688ed4d78d863d166c11
+  task: go2_him_retrain
+deployment_stage: v3_operator_requested_field_observation_sim2sim_failed
+qualification_report: '{LEGGED_GYM_ROOT_DIR}/logs/go2_him_retrain/direct_targets_v3_20261027_seed42/sim2sim/summary.json'
+training_profile: go2_him_direct_targets_v3
+mujoco_runtime_config: '{LEGGED_GYM_ROOT_DIR}/deploy/deploy_mujoco/configs/go2_him_fresh.yaml'
+command_profile: keyboard
+software_motion_limits: false
+hardware_deployment_blocked: true
+hardware_deployment_block_reason: v3实机翻车，已封停此权重的真机接管；仅允许离线排查

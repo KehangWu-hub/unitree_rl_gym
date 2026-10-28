@@ -1,0 +1,16 @@
+{
+  "initialization": "fresh_random",
+  "training_run": "logs/go2_him_retrain/from_scratch_v1_20261026_seed42",
+  "iteration": 4000,
+  "seed": 42,
+  "transitions": 131072000,
+  "policy_sha256": "d11dc06b34084968e7f3c0c46fb2df09ccf85a0412d9fb5dde21aa2e2a86ce6c",
+  "training_manifest_sha256": "3476ce211682ff963721b59b7acf792018a40c00c21c002348cf0e5d91ff0480",
+  "training_source_manifest_sha256": "ecf0c47a0b9f9bce425fd3473c4034af31a1da6d8b234048e05439cc928f564b",
+  "architecture": "HIM",
+  "actor_input": 64,
+  "history_input": 270,
+  "latent_size": 16,
+  "action_bound": 4.0,
+  "deployment_scope": "keyboard_v1: axis translations, pure yaw, forward walking turns; backward plus yaw unsupported"
+}

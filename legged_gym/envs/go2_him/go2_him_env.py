@@ -88,11 +88,13 @@ class Go2HIMRobot(BaseTask):
         clip_actions = self.cfg.normalization.clip_actions
         self.actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
 
-        self.delayed_actions = self.actions.clone().view(self.num_envs, 1, self.num_actions).repeat(1, self.cfg.control.decimation, 1)
+        control_actions = self._prepare_control_actions(self.actions)
+        self.delayed_actions = control_actions.clone().view(self.num_envs, 1, self.num_actions).repeat(1, self.cfg.control.decimation, 1)
         delay_steps = torch.randint(0, self.cfg.control.decimation, (self.num_envs, 1), device=self.device)
         if self.cfg.domain_rand.delay:
             for i in range(self.cfg.control.decimation):
-                self.delayed_actions[:, i] = self.last_actions + (self.actions - self.last_actions) * (i >= delay_steps)
+                previous = getattr(self, 'previous_control_actions', self.last_actions)
+                self.delayed_actions[:, i] = previous + (control_actions - previous) * (i >= delay_steps)
         # step physics and render each frame
         self.render()
         for _ in range(self.cfg.control.decimation):
@@ -110,6 +112,9 @@ class Go2HIMRobot(BaseTask):
         if self.privileged_obs_buf is not None:
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
         return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras, termination_ids, termination_priveleged_obs
+
+    def _prepare_control_actions(self, actions):
+        return actions
 
     def post_physics_step(self):
         """ check terminations, compute observations and rewards
@@ -223,6 +228,12 @@ class Go2HIMRobot(BaseTask):
 
     def _reset_observation_history(self, env_ids):
         """Prevent history and derived body velocities leaking across episodes."""
+        if len(env_ids) == 0:
+            return
+        # The runner still holds the pre-step tensors for its PPO transition.
+        # Clear reset histories in new buffers so those samples stay intact.
+        self.obs_buf = self.obs_buf.clone()
+        self.privileged_obs_buf = self.privileged_obs_buf.clone()
         self.obs_buf[env_ids] = 0.
         self.privileged_obs_buf[env_ids] = 0.
         self.actions[env_ids] = 0.
@@ -516,6 +527,7 @@ class Go2HIMRobot(BaseTask):
             torques = actions_scaled
         else:
             raise NameError(f"Unknown controller type: {control_type}")
+        torques = torques * self.motor_strength_factors
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
 
     def _reset_dofs(self, env_ids):
@@ -526,7 +538,12 @@ class Go2HIMRobot(BaseTask):
         Args:
             env_ids (List[int]): Environemnt ids
         """
-        self.dof_pos[env_ids] = self.default_dof_pos * torch_rand_float(0.5, 1.5, (len(env_ids), self.num_dof), device=self.device)
+        if self.cfg.domain_rand.randomize_initial_joint_pos:
+            lower, upper = self.cfg.domain_rand.initial_joint_pos_range
+            self.dof_pos[env_ids] = self.default_dof_pos * torch_rand_float(
+                lower, upper, (len(env_ids), self.num_dof), device=self.device)
+        else:
+            self.dof_pos[env_ids] = self.default_dof_pos
         self.dof_vel[env_ids] = 0.
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)

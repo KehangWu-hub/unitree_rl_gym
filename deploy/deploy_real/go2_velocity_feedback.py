@@ -263,12 +263,13 @@ class VelocityFeedback:
 
 class ControlledLowering:
     """Joint-only stand transition and lowering shared by explicit candidates."""
-    def __init__(self, stand_blend_seconds=2.):
+    def __init__(self, stand_blend_seconds=2., live_policy_blend=False):
         if not np.isfinite(stand_blend_seconds) or stand_blend_seconds < 2.:
             raise ValueError("站姿过渡时间至少2秒")
         self.stand_blend_seconds = float(stand_blend_seconds)
         self.exit_initial = None
         self.exit_trim = np.zeros(12)
+        self.live_policy_blend = bool(live_policy_blend)
 
     def command(self, trial, state, now):
         """Blend to static stand before lowering; no contact/velocity truth."""
@@ -283,7 +284,10 @@ class ControlledLowering:
                 or not np.isfinite(q).all() or not np.isfinite(dq).all() or not np.isfinite(tau_est).all()):
             raise ValueError('受控退出关节反馈无效')
         roll, pitch = quaternion_to_roll_pitch(state.quaternion_wxyz)
-        if (max(abs(roll),abs(pitch)) > .35 or np.any(abs(dq)>trial.policy_velocity_limits)
+        from deploy.deploy_real.deploy_real_go2 import require_safe_attitude
+        require_safe_attitude(roll, pitch, trial.config.safety.get('fall_tilt_limit_rad', .35))
+        enforce = trial.config.software_motion_limits_enabled
+        if enforce and (max(abs(roll),abs(pitch)) > .35 or np.any(abs(dq)>trial.policy_velocity_limits)
                 or np.any(q<trial.lower-.02) or np.any(q>trial.upper+.02)
                 or np.max(abs(tau_est))>trial.torque_limit):
             raise ValueError('受控退出姿态、关节或反馈力矩超限')
@@ -292,19 +296,40 @@ class ControlledLowering:
         if self.exit_initial is None:
             old = trial.last_policy_output
             initial_tau = old.kp_sdk*(old.target_pos_sdk-q)-old.kd_sdk*dq
-            target = np.clip(q+(initial_tau+old.kd_sdk*dq)/old.kp_sdk,trial.lower,trial.upper)
+            target = q+(initial_tau+old.kd_sdk*dq)/old.kp_sdk
+            if enforce:
+                target = np.clip(target,trial.lower,trial.upper)
             self.exit_initial = Go2Command(Go2Mode.POLICY,target,old.kp_sdk,old.kd_sdk)
             self.exit_last_time = now
             trial.controller.set_velocity_command(np.zeros(3))
         ratio = float(np.clip((elapsed-begin)/self.stand_blend_seconds,0,1));ratio=ratio*ratio*(3-2*ratio)
+        if self.live_policy_blend and ratio < 1.:
+            # Keep zero-command balance feedback while transferring support.
+            # A frozen gait target can unload a leg during a multi-second blend.
+            if trial.policy_time is None or now-trial.policy_time >= trial.config.control_dt-1e-7:
+                trial.controller.set_velocity_command(np.zeros(3))
+                live = trial.controller.step(now,state)
+                if live.mode is not Go2Mode.POLICY or live.reason:
+                    raise ValueError(live.reason or '退出过渡策略已停止')
+                trial.policy_command = trial.limit_policy_pd(live,state)
+                trial.policy_time = now
+                trial.inference_count += 1
+            self.exit_initial = trial.policy_command
         lowering = float(np.clip((elapsed-trial.lower_begin)/8.,0,1))
-        if ratio >= 1. and np.max(abs(dq)) > 2.:
+        if enforce and ratio >= 1. and np.max(abs(dq)) > 2.:
             raise ValueError('静态站姿或降低关节速度超过2rad/s')
         static_kp,static_kd = 60.,5.
         initial = self.exit_initial
         kp = initial.kp_sdk*(1-ratio)+static_kp*ratio
         kd = initial.kd_sdk*(1-ratio)+static_kd*ratio
         desired = trial.blend(trial.stand,trial.lowered,lowering)
+        if not enforce:
+            target = (initial.kp_sdk*(1-ratio)*initial.target_pos_sdk+static_kp*ratio*desired)/kp
+            trial.last_time = now
+            if elapsed >= trial.duration:
+                trial.stop(now,'测试时长结束')
+                return Go2Command(Go2Mode.DAMPING,np.zeros(12),np.zeros(12),np.full(12,3.),trial.reason)
+            return Go2Command(Go2Mode.FIX_STAND,target,kp,kd)
         dt = now-self.exit_last_time
         if elapsed >= trial.settle_begin:
             # Slow bounded correction only after lowering has finished. It is

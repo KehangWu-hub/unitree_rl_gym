@@ -1,0 +1,39 @@
+{
+  "name": "Go2 HIM 自训4000轮（前进停步短程确认，落脚偏硬待处理）",
+  "policy_path": "deploy/pre_train/go2_him_fresh/policy.pt",
+  "config_path": "deploy/deploy_real/configs/go2_him_fresh.yaml",
+  "qualification_path": "logs/go2_him_fresh/qualification.json",
+  "readiness": {
+    "stand": {
+      "path": "logs/go2_him_fresh/real/commission/go2_real_20261027_112158_1793071318600863582.jsonl",
+      "sha256": "b6c0f21e9da4396d1830f4cf683d136e30927da7629d1061acf4c8fd9be6c21e"
+    },
+    "zero": {
+      "path": "logs/go2_him_fresh/real/commission/go2_real_20261027_112839_1793071719219439601.jsonl",
+      "sha256": "85386513406892750095e05aad1d45224971faa5008b0db97fd1a93ee2abbb18"
+    }
+  },
+  "physical_robot_validated": false,
+  "physical_stand_validated": true,
+  "physical_zero_policy_validated": true,
+  "physical_motion_validated": false,
+  "command_profile": "keyboard_v1",
+  "policy_sha256": "d11dc06b34084968e7f3c0c46fb2df09ccf85a0412d9fb5dde21aa2e2a86ce6c",
+  "config_sha256": "830e65d03d5f19102bad07f26d384df20427bf30b698ffc36e1c26b52c787b91",
+  "qualification_sha256": "19190b3cd4c613ee3c9c51f4cd5b2d77b8e4a3a8e82d69954ce2617c2b6cf453",
+  "physical_motion_result": "short_forward_stop_confirmed_hard_footstrike",
+  "motion_incident": {
+    "path": "logs/go2_him_fresh/real/commission/go2_real_20261027_114212_1793072532524340787.incident.json",
+    "sha256": "94e2c6b19bd08741310b3ea43006c402ed6f8f6edf28c513a92016492059a4bd"
+  },
+  "software_motion_limits": false,
+  "configuration_changed_after_incident": true,
+  "physical_forward_stop_validated": true,
+  "current_trial": {
+    "path": "logs/go2_him_fresh/real/commission/go2_real_20261027_133058_1793079058427592852.jsonl",
+    "sha256": "b55fd1fb9caaa9a6f9e5a2dbff8c9adc72c7c64e14a32530dfc4e20c67310485",
+    "operator_observation": "能正常前进和停步，没有前倾倒下；落脚偏重，有噼啪声",
+    "software_motion_limits_enabled": false,
+    "normal_c_exit": true
+  }
+}

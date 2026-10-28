@@ -13,12 +13,16 @@ class HIMPolicyExporter(torch.nn.Module):
         self.actor = copy.deepcopy(actor_critic.actor).cpu()
         self.estimator = copy.deepcopy(actor_critic.estimator.encoder).cpu()
         self.num_one_step_obs = int(actor_critic.num_one_step_obs)
+        self.action_bound = float(getattr(actor_critic, 'action_bound', 0.))
 
     def forward(self, obs_history):
         parts = self.estimator(obs_history)
         velocity = parts[..., :3]
         latent = F.normalize(parts[..., 3:], dim=-1, p=2.0)
-        return self.actor(torch.cat((obs_history[..., :self.num_one_step_obs], velocity, latent), dim=-1))
+        action = self.actor(torch.cat((obs_history[..., :self.num_one_step_obs], velocity, latent), dim=-1))
+        if self.action_bound > 0.:
+            action = self.action_bound * torch.tanh(action / self.action_bound)
+        return action
 
 
 def export_him_policy(actor_critic, directory):

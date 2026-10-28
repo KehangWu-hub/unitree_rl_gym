@@ -1,0 +1,52 @@
+{
+  "name": "Go2 HIM v3 无额外步长与PD投影（仿真未通过，用户指定现场观察）",
+  "policy_path": "deploy/pre_train/go2_him_direct_targets_v3/policy.pt",
+  "config_path": "deploy/deploy_real/configs/go2_him_direct_targets_v3.yaml",
+  "policy_sha256": "c2c9c173a1fc6275ea5707a7af1cd15d5c06fbb96d364ea3a6397898168e2460",
+  "config_sha256": "f9c784247b3d2a7a5e799623d81ae34fbf16ee8da0640893e7d11c44b3650fe9",
+  "physical_robot_validated": false,
+  "physical_stand_validated": false,
+  "physical_zero_policy_validated": false,
+  "physical_motion_validated": false,
+  "physical_motion_result": "failed_rollover_continued_position_control",
+  "software_motion_limits": false,
+  "sim2sim_report": "logs/go2_him_retrain/direct_targets_v3_20261027_seed42/sim2sim/report.md",
+  "sim2sim_summary_sha256": "36805d85b7fb121674a613ba2d4e3454e7577492b700ec02207f75b98a233052",
+  "sim2sim_passed": false,
+  "foot_drag_resolved_in_simulation": false,
+  "readiness": {},
+  "current_trial": {
+    "path": "logs/go2_him_direct_targets_v3/real/commission/go2_real_20261027_191320_1793099600415659358.jsonl",
+    "sha256": "8e2ad41e735c10a0181bacfbbb56e135349bdfd043031303a1c9a13c89bec0e5",
+    "modes": {
+      "fix_stand": 8755,
+      "policy": 3132,
+      "damping": 502
+    },
+    "policy_sha256": [
+      "c2c9c173a1fc6275ea5707a7af1cd15d5c06fbb96d364ea3a6397898168e2460"
+    ],
+    "commands_seen": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.3,
+        0.0,
+        0.0
+      ]
+    ],
+    "last_mode": "damping",
+    "last_reason": "受控退出LowState通信超时",
+    "duration_s": 25.471231784002157,
+    "maximum_logged_state_age_s": 1.1027883899805602,
+    "normal_c_exit": false,
+    "operator_confirms_resting_stopped": true,
+    "walking_quality_feedback": "failed_rollover",
+    "automatic_restart_performed": false,
+    "operator_observation": "整个机器人直接翻车，然后乱动乱撞；此前已确认最终趴稳停止"
+  },
+  "hardware_deployment_blocked": true
+}

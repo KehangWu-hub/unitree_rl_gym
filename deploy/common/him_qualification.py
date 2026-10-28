@@ -17,16 +17,23 @@ QUALIFICATION_SOURCES = (
     'deploy/deploy_real/deploy_real_go2.py', 'deploy/deploy_real/go2_commission.py',
     'deploy/deploy_real/go2_keyboard.py', 'deploy/deploy_real/go2_velocity_feedback.py',
     'deploy/deploy_mujoco/validate_go2_him.py', 'deploy/deploy_mujoco/deploy_go2.py',
-    'deploy/deploy_mujoco/configs/go2_him.yaml',
-    'deploy/pre_train/go2_him/deploy.yaml', 'deploy/pre_train/go2_him/provenance.json',
     'resources/robots/go2/mjcf/scene_flat.xml', 'resources/robots/go2/mjcf/go2.xml',
     'resources/robots/go2/urdf/go2.urdf',
     'legged_gym/scripts/evaluate_him.py', 'legged_gym/envs/go2_him/go2_him_env.py',
+    'legged_gym/scripts/evaluate_him_candidate.py', 'legged_gym/envs/go2_him/acceptance.py',
+    'legged_gym/envs/go2_him/retrain_config.py', 'legged_gym/envs/go2_him/retrain_env.py',
+    'third_party/himloco_rsl_rl/rsl_rl/modules/bounded_him_actor_critic.py',
 )
 
 
-def current_sources():
-    return {name: sha256(Path(LEGGED_GYM_ROOT_DIR) / name) for name in QUALIFICATION_SOURCES}
+def current_sources(config=None):
+    root = Path(LEGGED_GYM_ROOT_DIR)
+    names = list(QUALIFICATION_SOURCES)
+    package = Path(config.policy_path).parent if config is not None else root/'deploy/pre_train/go2_him'
+    runtime = resolve_path(config.data.get('mujoco_runtime_config', str(root/'deploy/deploy_mujoco/configs/go2_him.yaml')), str(root)) if config is not None else str(root/'deploy/deploy_mujoco/configs/go2_him.yaml')
+    names += [str((package/name).resolve().relative_to(root)) for name in ('deploy.yaml','provenance.json')]
+    names.append(str(Path(runtime).resolve().relative_to(root)))
+    return {name: sha256(root/name) for name in names}
 
 
 def require_sim2sim(config):
@@ -37,13 +44,16 @@ def require_sim2sim(config):
     if report.get('policy_sha256') != sha256(config.policy_path) or report.get('config_sha256') != config.source_sha256:
         raise ValueError('HIM验证报告与当前模型/配置不匹配')
     files = report.get('source_sha256', {})
-    required = QUALIFICATION_SOURCES
+    required = current_sources(config)
     if not all(name in files for name in required):
         raise ValueError('HIM验证报告缺少控制代码/模型摘要')
     for name, digest in files.items():
         if sha256(Path(LEGGED_GYM_ROOT_DIR) / name) != digest:
             raise ValueError(f'HIM验证后文件发生改变: {name}')
-    for stage in ('raw', 'protected', 'zero', 'forward', 'comparison'):
+    stages = ('raw', 'protected', 'zero', 'forward', 'comparison')
+    if config.data.get('training_profile'):
+        stages += ('isaac_acceptance', 'mujoco_acceptance')
+    for stage in stages:
         evidence = report.get('evidence', {}).get(stage, {})
         evidence_path = Path(LEGGED_GYM_ROOT_DIR) / evidence.get('path', '')
         if not evidence_path.is_file() or sha256(evidence_path) != evidence.get('sha256'):
@@ -51,6 +61,10 @@ def require_sim2sim(config):
         data = json.loads(evidence_path.read_text())
         if data.get('passed') is not True:
             raise ValueError(f'HIM验证未通过: {stage}')
+        if stage in ('isaac_acceptance','mujoco_acceptance'):
+            if data.get('policy_sha256') != report['policy_sha256'] or data.get('command_profile') != 'keyboard':
+                raise ValueError(f'HIM性能证据范围或模型不匹配: {stage}')
+            continue
         if stage != 'comparison' and (data.get('policy_sha256') != report['policy_sha256'] or
                 data.get('config_sha256') != config.source_sha256 or data.get('source_sha256') != files):
             raise ValueError(f'HIM验证证据版本不一致: {stage}')

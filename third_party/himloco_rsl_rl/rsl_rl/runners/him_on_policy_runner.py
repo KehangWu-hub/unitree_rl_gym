@@ -37,7 +37,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torch
 
 from third_party.himloco_rsl_rl.rsl_rl.algorithms import PPO, HIMPPO
-from third_party.himloco_rsl_rl.rsl_rl.modules import HIMActorCritic
+from third_party.himloco_rsl_rl.rsl_rl.modules import HIMActorCritic, BoundedHIMActorCritic
 from third_party.himloco_rsl_rl.rsl_rl.env import VecEnv
 
 
@@ -175,7 +175,7 @@ class HIMOnPolicyRunner:
                 value = torch.mean(infotensor)
                 self.writer.add_scalar('Episode/' + key, value, locs['it'])
                 ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
-        mean_std = self.alg.actor_critic.std.mean()
+        mean_std = self.alg.actor_critic.action_std.mean()
         fps = int(self.num_steps_per_env * self.env.num_envs / (locs['collection_time'] + locs['learn_time']))
 
         self.writer.add_scalar('Loss/value_function', locs['mean_value_loss'], locs['it'])

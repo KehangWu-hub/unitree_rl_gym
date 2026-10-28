@@ -27,7 +27,7 @@ def main():
     own, remaining = parser.parse_known_args()
     sys.argv = [sys.argv[0]] + remaining
     args = get_args()
-    args.task = 'go2_him'
+    args.task = 'go2_him_retrain' if args.task == 'go2_him_retrain' else 'go2_him'
     args.num_envs = args.num_envs or 64
     if args.num_envs < 8 or args.num_envs % 8:
         raise ValueError('Use a positive multiple of eight environments')
@@ -44,10 +44,16 @@ def main():
         if field.startswith('randomize_') or field in ('push_robots', 'disturbance', 'delay'):
             setattr(cfg.domain_rand, field, False)
     env, _ = task_registry.make_env(args.task, args=args, env_cfg=cfg)
+    env.reset()
+    saved_kp,saved_kd = env.p_gains.clone(),env.d_gains.clone()
+    env.p_gains *= 2.;env.d_gains *= 2.
+    for _ in range(150):env.step(torch.zeros_like(env.actions))
+    env.p_gains[:] = saved_kp;env.d_gains[:] = saved_kd
     policy = torch.jit.load(str(own.policy_path), map_location=env.device).eval()
     cases = [[0,0,0], [.3,0,0], [-.3,0,0], [0,.3,0], [0,-.3,0], [.3,0,.3], [.3,0,-.3], [0,0,0]]
     commands = torch.tensor(cases, device=env.device).repeat_interleave(args.num_envs//8, dim=0)
     env.commands[:,:3] = commands
+    env._reset_observation_history(torch.arange(args.num_envs,device=env.device))
     env.compute_observations()
     obs = env.get_observations()
     values = []

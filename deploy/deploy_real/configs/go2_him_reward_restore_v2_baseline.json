@@ -1,0 +1,25 @@
+{
+  "name": "Go2 HIM v2 四项奖励恢复4000轮（仿真仍有拖滑，现场观察候选）",
+  "policy_path": "deploy/pre_train/go2_him_reward_restore_v2/policy.pt",
+  "config_path": "deploy/deploy_real/configs/go2_him_reward_restore_v2.yaml",
+  "policy_sha256": "03b2269b482d0421ce2787f49e0efc5975bb9364044ff895280628703ee749a0",
+  "config_sha256": "5f65829e6f976a4c129a4d7b2a09b6c21d28c3d2945fbbe432660ac621214cf4",
+  "physical_robot_validated": false,
+  "physical_stand_validated": false,
+  "physical_zero_policy_validated": false,
+  "physical_motion_validated": false,
+  "physical_motion_result": "operator_reports_poor_gait_v2",
+  "software_motion_limits": false,
+  "sim2sim_report": "logs/go2_him_retrain/reward_restore_v2_20261027_seed42/sim2sim/report.md",
+  "sim2sim_summary_sha256": "baff7623e4bcdbf22ebfe0257aeef0d9d64cdeefeed826fdff105eec6f3a718c",
+  "foot_drag_resolved_in_simulation": false,
+  "readiness": {},
+  "current_trial": {
+    "path": "logs/go2_him_reward_restore_v2/real/commission/go2_real_20261027_162030_1793089230244654276.jsonl",
+    "sha256": "26b65ffcaf7166f8d9af223a4a13ce870454277374bb21b835d1523005cdb543",
+    "operator_observation": "步态太丑；用户提供17.8秒视频供分析",
+    "normal_c_exit": true,
+    "video_review": "logs/go2_him_reward_restore_v2/video_review/analysis.md",
+    "software_motion_limits_enabled": false
+  }
+}

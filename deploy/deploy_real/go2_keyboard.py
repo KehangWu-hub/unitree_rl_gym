@@ -31,6 +31,12 @@ def verify_baseline(config, manifest, config_path=CONFIG):
 
 
 def validate_readiness(path, mode, config, manifest, motion_seconds=None, walk_speed=.3, action_step_mode=None, left_speed=.3, speed_profile="legacy"):
+    if config is not None and not config.software_motion_limits_enabled:
+        return commission.PolicyCheck(config,None,forward=mode!='zero',forward_speed=.4 if mode!='zero' else .1,
+            keyboard=mode!='zero',keyboard_axis={'all':'all','walk-turn':'yaw','backward':'backward','lateral':'lateral'}.get(mode,'forward'),
+            yaw_speed=.3,turn_forward_speed=.3 if mode in ('all','walk-turn') else 0.,
+            keyboard_motion_seconds=motion_seconds,continuous=mode=='all' and motion_seconds is None,
+            walk_speed=walk_speed,left_speed=left_speed,action_step_mode=action_step_mode,speed_profile=speed_profile)
     action_step_mode = commission.resolve_action_step_mode(action_step_mode, mode != 'zero' or (config is not None and config.data.get('format_version') == 2))
     if (walk_speed > .3 or left_speed > .3) and action_step_mode != "limit":
         raise ValueError("提高前进速度必须启用--action-step-mode limit")
@@ -154,15 +160,20 @@ def main(argv=None):
         options.action_step_mode = commission.resolve_action_step_mode(options.action_step_mode, options.mode != 'zero' or him)
         manifest = json.loads(options.baseline.read_text(encoding='utf-8'))
         verify_baseline(config, manifest, options.config)
+        if options.run:
+            config.require_hardware_deployment_allowed()
         kind = 'stand' if options.mode == 'zero' else 'zero'
-        if not options.readiness and kind not in manifest.get('readiness', {}):
+        if config.software_motion_limits_enabled and not options.readiness and kind not in manifest.get('readiness', {}):
             raise ValueError("此模型尚无现场前置记录；请完成站姿/零速验收后通过--readiness提供，不能沿用旧模型记录")
-        readiness = options.readiness or ROOT / manifest['readiness'][kind]['path']
+        readiness = options.readiness or ROOT / manifest.get('readiness', {}).get(kind, {}).get('path','unused')
         trial = validate_readiness(readiness, options.mode, config, manifest, options.motion_seconds, options.walk_speed, options.action_step_mode, options.left_speed, options.speed_profile)
         trial.controller.validate_policy()
     except (OSError, ValueError, KeyError, RuntimeError) as error:
         parser.error(f'离线核对失败：{error}。历史日志不随仓库分发；可用--readiness提供匹配记录。')
-    print(f'基线：{manifest["name"]}；PD {trial.policy_pd_limit:g}Nm，反馈停止 {trial.torque_limit:g}Nm。', flush=True)
+    if config.software_motion_limits_enabled:
+        print(f'基线：{manifest["name"]}；PD {trial.policy_pd_limit:g}Nm，反馈停止 {trial.torque_limit:g}Nm。', flush=True)
+    else:
+        print(f'模型：{manifest["name"]}；额外动作/力矩整形关闭；独立摔倒保护开启（横滚/俯仰阈值{config.safety.get("fall_tilt_limit_rad", .35):g}rad），触发后锁定阻尼。',flush=True)
     if options.mode == 'all':
         if options.motion_seconds is None:
             print('持续控制：接管后第8秒开放按键，无累计运动预算或自动结束时间；C受控降低退出，Z/Ctrl+C紧急终止。', flush=True)
@@ -173,9 +184,9 @@ def main(argv=None):
                 print('W/S前后±0.50m/s；A/D侧移±0.40m/s；Q/E前进0.50m/s、转向±0.50rad/s。', flush=True)
             else:
                 print(f'W前进{options.walk_speed:.2f}m/s；S后退0.30、A左移{options.left_speed:.2f}、D右移0.30m/s；Q/E前进0.30m/s加左右转0.30rad/s。', flush=True)
-        if options.action_step_mode == 'limit':
+        if options.action_step_mode == 'limit' and config.software_motion_limits_enabled:
             print(f'动作单步限幅{trial.controller.action_step_limit:g}；关节速度逐关节取URDF与配置交集：{trial.policy_velocity_limits.tolist()} rad/s（SDK顺序）。', flush=True)
-        print('最后方向键生效，换方向先归零再加速；X/空格停走，C受控降低退出，Z/Ctrl+C紧急阻尼。', flush=True)
+        print(('最后方向键生效，换方向先归零再加速；' if config.software_motion_limits_enabled else '最后方向键直接生效；')+'X/空格停走，C受控降低退出，Z/Ctrl+C紧急阻尼。', flush=True)
         print('看到按键窗口提示后再操作；松键最长0.6秒归零，请主动按X。', flush=True)
     elif options.mode == 'walk-turn':
         print('29秒流程：5秒接管、2秒保持、1秒零速；第8～20秒接受Q/E；第22秒开始降低。', flush=True)

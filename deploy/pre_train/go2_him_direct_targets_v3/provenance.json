@@ -1,0 +1,20 @@
+{
+  "initialization": "fresh_random",
+  "training_run": "logs/go2_him_retrain/direct_targets_v3_20261027_seed42",
+  "iteration": 4000,
+  "seed": 42,
+  "transitions": 131072000,
+  "policy_sha256": "c2c9c173a1fc6275ea5707a7af1cd15d5c06fbb96d364ea3a6397898168e2460",
+  "training_manifest_sha256": "2c797693983c97b88b0e7d1566e65353f5adffdfcd0a86609ed4711aa1387853",
+  "training_source_manifest_sha256": "aed8abcdf57570a17d4fdfa2181213c7de440a19c1ea8c8360f076ed5aa307cd",
+  "architecture": "HIM",
+  "actor_input": 64,
+  "history_input": 270,
+  "latent_size": 16,
+  "action_bound": 4.0,
+  "training_joint_target_mode": "direct",
+  "sim2sim_report": "logs/go2_him_retrain/direct_targets_v3_20261027_seed42/sim2sim/report.md",
+  "sim2sim_passed": false,
+  "foot_drag_resolved_in_simulation": false,
+  "physical_robot_validated": false
+}

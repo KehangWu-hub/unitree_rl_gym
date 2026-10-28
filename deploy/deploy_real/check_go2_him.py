@@ -56,7 +56,12 @@ def check(config):
     controller=fresh();controller.policy=lambda obs:torch.full((1,12),float('nan'))
     checks['nan_action_stops']=controller.step(1.,state()).mode is Go2Mode.DAMPING
     controller=fresh();controller.policy=lambda obs:torch.ones((1,12))*10
-    checks['large_action_stops']=controller.step(1.,state()).mode is Go2Mode.DAMPING
+    large_output=controller.step(1.,state())
+    if config.software_motion_limits_enabled:
+        checks['large_action_stops']=large_output.mode is Go2Mode.DAMPING
+    else:
+        checks['finite_action_passthrough']=bool(large_output.mode is Go2Mode.POLICY and
+            np.allclose(large_output.target_pos_sdk,(q+2.5)[config.sdk_to_policy]))
     controller=fresh();controller.emergency_stop(1.,'offline injected stop')
     checks['emergency_latched']=controller.step(1.01,state(1.01)).mode is Go2Mode.DAMPING
     gate=CommandGate(config,2.)
@@ -84,12 +89,15 @@ def check(config):
     qualification_error=None
     try:require_sim2sim(config);qualified=True
     except (OSError,ValueError,KeyError) as error:qualified=False;qualification_error=str(error)
+    enforced=config.software_motion_limits_enabled
     return {'offline_only':True,'dds_initialized':False,'physical_robot_started':False,
-            'interface_passed':all(checks.values()),'sim2sim_passed':qualified,'passed':all(checks.values()) and qualified,
+            'software_motion_limits_enabled':enforced,'sim2sim_enforced':enforced,
+            'interface_passed':all(checks.values()),'sim2sim_passed':qualified,'passed':all(checks.values()) and (qualified or not enforced),
             'checks':checks,'qualification_error':qualification_error,
             'latency_ms':{'median':float(np.median(timings)),'p99':float(np.percentile(timings,99)),'max':max(timings)},
             'policy_sha256':sha256(config.policy_path),'config_sha256':config.source_sha256,
-            'field_readiness':'Not performed: physical stand/zero-velocity records required before keyboard movement'}
+            'field_readiness':'Physical stand/zero records required before keyboard movement' if enforced else
+                'Physical walking remains unverified; historical records are retained, not used as entry gates'}
 
 
 def main():

@@ -82,6 +82,23 @@ def export_deploy_config(env, path, robot_name):
             "velocity_commands", "base_ang_vel", "projected_gravity",
             "joint_pos_rel", "joint_vel", "last_action")]
         cfg["policy"]["last_action_semantics"] = "previous_clipped_policy_action"
+        if hasattr(env.cfg, 'training_profile'):
+            cfg['training_profile'] = env.cfg.training_profile
+            distribution = getattr(env.cfg, 'action_distribution', 'scaled_tanh_normal')
+            cfg['policy']['action_distribution'] = distribution
+            if distribution == 'scaled_tanh_normal':
+                cfg['policy']['action_bound'] = float(env.cfg.normalization.clip_actions)
+            if getattr(env.cfg, 'hardware_deployment_blocked', False):
+                cfg['hardware_deployment_blocked'] = True
+                cfg['hardware_deployment_block_reason'] = '上游配方对照基线仅用于离线训练，尚未完成步态与部署验证'
+            if hasattr(env.cfg.control, 'policy_pd_limit'):
+                # Historical profiles remain exportable from their snapshots.
+                cfg['control']['policy_pd_limit_nm'] = float(env.cfg.control.policy_pd_limit)
+                cfg['control']['action_step_limit'] = float(env.cfg.control.action_step_limit)
+                cfg['control']['joint_target_mode'] = 'clip_then_pd_projection'
+            else:
+                cfg['software_motion_limits'] = False
+                cfg['control']['joint_target_mode'] = 'direct'
         hip_reduction = float(env.cfg.control.hip_reduction)
         if hip_reduction != 1.0:
             cfg["actions"]["scale"] = [float(env.cfg.control.action_scale) *
@@ -89,7 +106,7 @@ def export_deploy_config(env, path, robot_name):
         cfg["training_source"] = {
             "repository": "https://github.com/1170632760/HIMLOCO_GO2",
             "commit": "2e70bcf66d2a479add5a688ed4d78d863d166c11",
-            "task": "go2_him",
+            "task": getattr(env.cfg, 'training_task', 'go2_him_retrain' if hasattr(env.cfg, 'training_profile') else 'go2_him'),
         }
 
     output_path = os.path.join(path, "deploy.yaml")

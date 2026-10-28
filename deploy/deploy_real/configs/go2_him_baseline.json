@@ -1,11 +1,28 @@
 {
-  "name": "Go2 HIM upstream pretrained, sim2sim validated; field commissioning pending",
+  "name": "Go2 HIM（现场行走失败，当前停用）",
   "policy_path": "deploy/pre_train/go2_him/policy.pt",
   "policy_sha256": "178eb57b6a0024cb949a964ea7892f622f12929a5698637d847d57d5cd4ab627",
   "config_path": "deploy/deploy_real/configs/go2_him.yaml",
   "config_sha256": "54db615cd0fd6a3b9a98784c96eb655dd6b2c68abc2f58adda197ab1fa9358f5",
   "qualification_path": "logs/go2_him/qualification.json",
-  "qualification_sha256": "cc1ae778e020ca93176883e4b7dc1e4580c3496dadca405e825bffd5ed3e736c",
-  "readiness": {},
-  "physical_robot_validated": false
+  "qualification_sha256": "6d3cf7af2c9d43d0b85fea3e62b57daa0f1874bf113dff908951c62ab75a24ab",
+  "readiness": {
+    "stand": {
+      "path": "logs/go2_him/real/commission/go2_real_20261026_214938_1793022578218963507.jsonl",
+      "sha256": "be57054d0f5a003d3465fec1dddb89ae8424daaff948659a5b8ce21b2af50a9f"
+    },
+    "zero": {
+      "path": "logs/go2_him/real/commission/go2_real_20261026_215619_1793022979192429627.jsonl",
+      "sha256": "000d19912a1e61967377a2acbb9aeacced20645219a7fac79b810ab5d16304bc"
+    }
+  },
+  "physical_robot_validated": false,
+  "physical_stand_validated": true,
+  "physical_zero_policy_validated": true,
+  "physical_motion_validated": false,
+  "physical_motion_result": "failed",
+  "motion_incident": {
+    "path": "logs/go2_him/real/commission/go2_real_20261026_220318_1793023398673529554.incident.json",
+    "sha256": "dba712ecc9c2c3d80f1a0fc06a5cc0950f7575703739e1f4c9f7bc05111b67b0"
+  }
 }

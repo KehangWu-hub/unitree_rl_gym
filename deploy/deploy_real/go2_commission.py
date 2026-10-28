@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
+from deploy.deploy_real.deploy_real_go2 import require_safe_attitude
 from deploy.deploy_real.deploy_real_go2 import (
     Go2Command, Go2Controller, Go2DDSTransport, Go2Mode, Go2RealConfig, Go2Recorder,
     KeyboardVelocity, TerminalKeys, _array, quaternion_to_roll_pitch, model_joint_velocity_limits,
@@ -46,6 +47,7 @@ class VerifiedTransport(Go2DDSTransport):
 
     def prepare_factory_handoff(self):
         """已确认normal时只初始化发布器，不写消息；释放服务后立即保持。"""
+        self._commission_config.require_hardware_deployment_allowed()
         from unitree_sdk2py.core.channel import ChannelPublisher
         from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_
         if self._publisher is not None:
@@ -187,6 +189,8 @@ def check_standing(config, state, now):
     if state is None or not 0 <= now - state.timestamp <= .1:
         raise ValueError('站立接管LowState超时')
     q, dq = _array(state.joint_pos_sdk, 'q'), _array(state.joint_vel_sdk, 'dq')
+    if not config.software_motion_limits_enabled:
+        return q, dq
     roll, pitch = quaternion_to_roll_pitch(state.quaternion_wxyz)
     limbs = q[config.policy_to_sdk].reshape(4, 3)
     if max(abs(roll), abs(pitch)) > .2 or np.max(np.abs(dq)) > .2:
@@ -354,7 +358,7 @@ class StandCheck:
         _array((getattr(state, 'feedback', None) or {}).get('joint_tau_est_sdk'), 'tau_est')
         outside = q < self.lower
         calves = np.array([i % 3 == 2 for i in range(12)])
-        if np.any(outside & ~calves) or np.any(q < self.lower - .15) or np.any(q > self.upper):
+        if self.config.software_motion_limits_enabled and (np.any(outside & ~calves) or np.any(q < self.lower - .15) or np.any(q > self.upper)):
             raise ValueError('站立起点超出允许的趴卧小腿过渡范围')
         self.initial = q.copy()
         self.started = now
@@ -419,22 +423,24 @@ class StandCheck:
                 q, dq = _array(state.joint_pos_sdk, 'q'), _array(state.joint_vel_sdk, 'dq')
                 tau = _array((getattr(state, 'feedback', None) or {}).get('joint_tau_est_sdk'), 'tau_est')
                 roll, pitch = quaternion_to_roll_pitch(state.quaternion_wxyz)
-                if max(abs(roll), abs(pitch)) > .35 or np.max(np.abs(dq)) > 2:
+                require_safe_attitude(roll, pitch, self.config.safety.get('fall_tilt_limit_rad', .35))
+                enforce = self.config.software_motion_limits_enabled
+                if enforce and (max(abs(roll), abs(pitch)) > .35 or np.max(np.abs(dq)) > 2):
                     raise ValueError('站立验收姿态/速度超限')
                 e = now - self.started
                 phase = self.phase(now)[0]
                 state_lower = np.minimum(self.initial - .003, self.lower - .02) if e < self.entry_end else self.lower - .02
-                if np.any(q < state_lower) or np.any(q > self.upper + .02):
+                if enforce and (np.any(q < state_lower) or np.any(q > self.upper + .02)):
                     raise ValueError('站立验收实际关节超限；过渡未及时进入模型范围')
                 target, kp, kd = self.profile(now)
                 target_lower = np.minimum(self.initial, self.lower) if e < self.entry_end else self.lower
-                if np.any(target < target_lower - 1e-7) or np.any(target > self.upper):
+                if enforce and (np.any(target < target_lower - 1e-7) or np.any(target > self.upper)):
                     raise ValueError('站立验收目标超限')
-                if np.max(np.abs(kp * (target - q) - kd * dq)) > self.torque_limit or np.max(np.abs(tau)) > self.torque_limit:
+                if enforce and (np.max(np.abs(kp * (target - q) - kd * dq)) > self.torque_limit or np.max(np.abs(tau)) > self.torque_limit):
                     raise ValueError(f'站立验收PD/反馈估算力矩超过{self.torque_limit:g}Nm')
-                if np.max(np.abs(target - q)) > self.tracking_tolerance:
+                if enforce and np.max(np.abs(target - q)) > self.tracking_tolerance:
                     raise ValueError('站立验收跟踪误差超过0.25弧度')
-                if self.hold_begin + 1 <= e < self.lower_begin and np.max(np.abs(q - self.stand)) <= self.hold_tolerance and max(abs(roll), abs(pitch)) <= .2:
+                if self.hold_begin + 1 <= e < self.lower_begin and (not enforce or (np.max(np.abs(q - self.stand)) <= self.hold_tolerance and max(abs(roll), abs(pitch)) <= .2)):
                     tick = (getattr(state, 'feedback', None) or {}).get('state_tick')
                     if tick is None:
                         raise ValueError('站立验收缺少状态tick')
@@ -449,7 +455,7 @@ class StandCheck:
                 if phase == 'lower' and (self.hold_samples < 50 or self.hold_first is None or self.hold_last - self.hold_first < .8):
                     raise ValueError('FixStand增益站立保持未达到验收要求')
                 if e >= self.duration:
-                    if self.start_standing:
+                    if enforce and self.start_standing:
                         # 此时是低姿态，随后零Kp阻尼才放到地面；不声称已接触地面。
                         limbs = q[self.config.policy_to_sdk].reshape(4, 3)
                         if (max(abs(roll), abs(pitch)) > .2 or np.max(np.abs(dq)) > .2
@@ -457,9 +463,9 @@ class StandCheck:
                                 or np.any(limbs[:, 1] < 1.1) or np.any(limbs[:, 1] > 1.6)
                                 or np.any(limbs[:, 2] > -2.4)):
                             raise ValueError('降低后的低姿态/静止检查未通过')
-                    else:
+                    elif enforce:
                         check_prone(self.config, state, now)
-                    if np.max(np.abs(q - self.lowered)) > self.settle_tracking_tolerance:
+                    if enforce and np.max(np.abs(q - self.lowered)) > self.settle_tracking_tolerance:
                         raise ValueError('受控降低未接近卧倒目标')
                     self.stop(now, '测试时长结束')
                 self.last_time = now
@@ -501,7 +507,7 @@ class PolicyCheck(StandCheck):
     """原厂站姿接管；持续交互或短时策略检查共用同一保护链路。"""
 
     def __init__(self, config, readiness_log, policy=None, forward=False, forward_speed=.1, keyboard=False, keyboard_axis="forward", yaw_speed=.3, turn_forward_speed=0., keyboard_motion_seconds=None, walk_speed=.3, action_step_mode=None, continuous=False, left_speed=.3, speed_profile="legacy"):
-        if config.data.get('format_version') == 2:
+        if config.data.get('format_version') == 2 and config.software_motion_limits_enabled:
             if speed_profile != 'legacy' or walk_speed != .3 or left_speed != .3 or yaw_speed != .3 or turn_forward_speed not in (0., .3):
                 raise ValueError('当前HIM仅验证0.30平移和0.30行进转向配置')
             if action_step_mode is None:
@@ -531,7 +537,7 @@ class PolicyCheck(StandCheck):
             raise ValueError('运动时长选择需要统一键盘流程')
         if walk_speed not in (.3, .5) or (walk_speed != .3 and (not keyboard or keyboard_axis != "all")):
             raise ValueError("W前进速度仅允许统一键盘0.30或0.50m/s")
-        if walk_speed > float(config.data["command_limits"][0]):
+        if config.software_motion_limits_enabled and walk_speed > float(config.data["command_limits"][0]):
             raise ValueError("W前进速度超过配置指令上限")
         action_step_mode = resolve_action_step_mode(action_step_mode, forward or config.data.get("format_version") == 2)
         if walk_speed > .3 and action_step_mode != "limit":
@@ -568,10 +574,10 @@ class PolicyCheck(StandCheck):
         with open(config.policy_path, 'rb') as stream:
             self.policy_sha256 = hashlib.sha256(stream.read()).hexdigest()
         commissioning = config.data.get('commissioning', {})
-        self.policy_pd_limit = float(commissioning.get('policy_pd_limit_nm', 10.5))
-        self.torque_limit = float(commissioning.get('feedback_torque_limit_nm', 12.0))
+        self.policy_pd_limit = float(commissioning.get('policy_pd_limit_nm', 10.5)) if config.software_motion_limits_enabled else None
+        self.torque_limit = float(commissioning.get('feedback_torque_limit_nm', 12.0)) if config.software_motion_limits_enabled else None
         model_ceiling = float(np.min(config.torque_limits * config.safety['torque_limit_ratio']))
-        if (not np.isfinite([self.policy_pd_limit, self.torque_limit]).all()
+        if config.software_motion_limits_enabled and (not np.isfinite([self.policy_pd_limit, self.torque_limit]).all()
                 or not 0 < self.policy_pd_limit < self.torque_limit <= model_ceiling):
             raise ValueError('验收力矩参数必须满足0<PD限幅<反馈保护<=模型力矩保护')
         self._validate_readiness(readiness_log, config, forward)
@@ -611,6 +617,8 @@ class PolicyCheck(StandCheck):
 
     def _validate_readiness(self, readiness_log, config, forward):
         """Physical entry requires physical evidence; simulation subclasses never publish DDS."""
+        if not config.software_motion_limits_enabled:
+            return
         with open(readiness_log, encoding='utf-8') as stream:
             rows = [json.loads(line) for line in stream if line.strip()]
             if config.data.get("format_version") == 2:
@@ -672,6 +680,8 @@ class PolicyCheck(StandCheck):
         return Go2Command(Go2Mode.POLICY, target, kp, kd)
 
     def limit_policy_pd(self, command, state):
+        if not self.config.software_motion_limits_enabled:
+            return command
         q, dq = _array(state.joint_pos_sdk, 'q'), _array(state.joint_vel_sdk, 'dq')
         order = self.config.policy_to_sdk
         target = self.controller.safety.limit_pd_target(
@@ -684,7 +694,7 @@ class PolicyCheck(StandCheck):
         q, dq = _array(state.joint_pos_sdk, 'q'), _array(state.joint_vel_sdk, 'dq')
         tau = _array((getattr(state, 'feedback', None) or {}).get('joint_tau_est_sdk'), 'tau_est')
         pd = command.kp_sdk*(command.target_pos_sdk-q)-command.kd_sdk*dq
-        if np.max(np.abs(pd)) > self.torque_limit or np.max(np.abs(tau)) > self.torque_limit:
+        if self.config.software_motion_limits_enabled and (np.max(np.abs(pd)) > self.torque_limit or np.max(np.abs(tau)) > self.torque_limit):
             raise ValueError(f'策略试跑力矩保护: PD={np.max(np.abs(pd)):.3f}Nm,反馈={np.max(np.abs(tau)):.3f}Nm,上限{self.torque_limit:g}Nm')
         self.last_policy_output = command
         self.last_time = now
@@ -755,7 +765,8 @@ class PolicyCheck(StandCheck):
 
     def _configure_him_exit(self, elapsed):
         from deploy.deploy_real.go2_velocity_feedback import ControlledLowering
-        self.controlled_lowering = ControlledLowering(stand_blend_seconds=4.)
+        self.controlled_lowering = ControlledLowering(stand_blend_seconds=4.,
+            live_policy_blend=bool(self.config.data.get('training_profile')))
         self.lower_begin = elapsed + 10.  # brake 2, stand blend 4, hold 4
         self.settle_begin = self.lower_begin + 8.
         self.duration = self.settle_begin + 5.
@@ -815,6 +826,12 @@ class PolicyCheck(StandCheck):
         if self.keyboard_axis == "all":
             return self.unified_keyboard_profile(now, elapsed, dt)
         target = self.keyboard_input.sample(now)[self.keyboard_axis_index] if 8 <= elapsed < self.keyboard_window_end and self.keyboard_used < self.keyboard_budget else 0.
+        if not self.config.software_motion_limits_enabled:
+            self.keyboard_velocity=float(target)
+            command=np.zeros(3,dtype=np.float32);command[self.keyboard_axis_index]=target
+            if self.turn_forward_speed and target:
+                command[0]=self.turn_forward_speed*abs(target)/self.yaw_speed
+            return command
         if target == 0:
             self.keyboard_velocity = 0.
         elif target*self.keyboard_velocity < 0:
@@ -838,6 +855,10 @@ class PolicyCheck(StandCheck):
         if self.speed_profile == 'uniform':
             if target[0] < 0: target[0] = -self.walk_speed
             if target[1] < 0: target[1] = -self.left_speed
+        if not self.config.software_motion_limits_enabled:
+            self.keyboard_command=np.asarray(target,dtype=np.float32).copy()
+            self.keyboard_velocity=float(np.max(np.abs(self.keyboard_command)))
+            return self.keyboard_command.copy()
         # 每次只执行最后一个方向键；换方向先归零一个策略周期，再重新加速。
         if not np.any(target) or (np.any(self.keyboard_command) and
                 not np.array_equal(np.sign(target), np.sign(self.keyboard_command))):
@@ -877,6 +898,12 @@ class PolicyCheck(StandCheck):
         return super().profile(now)
 
     def output(self, now, state):
+        if self.started is not None and not self.reason and state is not None:
+            try:
+                roll, pitch = quaternion_to_roll_pitch(state.quaternion_wxyz)
+                require_safe_attitude(roll, pitch, self.config.safety.get('fall_tilt_limit_rad', .35))
+            except (ValueError, TypeError, AttributeError) as error:
+                self.stop(now, str(error))
         if (self.him_scheduled_exit is not None and self.started is not None
                 and self.normal_exit is None and now-self.started >= self.him_scheduled_exit):
             self._configure_him_exit(self.him_scheduled_exit-2.)
@@ -904,14 +931,15 @@ class PolicyCheck(StandCheck):
                 q, dq = _array(state.joint_pos_sdk, 'q'), _array(state.joint_vel_sdk, 'dq')
                 tau = _array((getattr(state, 'feedback', None) or {}).get('joint_tau_est_sdk'), 'tau_est')
                 roll, pitch = quaternion_to_roll_pitch(state.quaternion_wxyz)
-                if max(abs(roll), abs(pitch)) > .35:
+                enforce = self.config.software_motion_limits_enabled
+                if enforce and max(abs(roll), abs(pitch)) > .35:
                     raise ValueError('策略试跑姿态超限')
                 exceeded = np.flatnonzero(np.abs(dq) > self.policy_velocity_limits)
-                if exceeded.size:
+                if enforce and exceeded.size:
                     joint = int(exceeded[0])
                     name = self.config.data['policy']['sdk_joint_names'][joint]
                     raise ValueError(f'策略关节速度{name}={dq[joint]:.3f}rad/s超过{self.policy_velocity_limits[joint]:g}rad/s')
-                if np.any(q < self.lower - .02) or np.any(q > self.upper + .02):
+                if enforce and (np.any(q < self.lower - .02) or np.any(q > self.upper + .02)):
                     raise ValueError('策略试跑实际关节超限')
                 if self.gait_restart is not None and self.gait_restart.active:
                     command = self.restart_output(now, state, max(abs(roll), abs(pitch)))
@@ -955,7 +983,7 @@ class PolicyCheck(StandCheck):
                 pd = c.kp_sdk * (c.target_pos_sdk - q) - c.kd_sdk * dq
                 # 切换60/5时保持同一帧估算PD，随后5秒平滑降低。
                 self.exit_start = q + (pd + 5 * dq) / 60
-                if np.any(self.exit_start < self.lower) or np.any(self.exit_start > self.upper):
+                if self.config.software_motion_limits_enabled and (np.any(self.exit_start < self.lower) or np.any(self.exit_start > self.upper)):
                     raise ValueError('策略退出目标超出模型范围')
             except (ValueError, TypeError, AttributeError) as error:
                 self.stop(now, str(error))
@@ -1054,7 +1082,28 @@ def assess_response(rows, joint=3):
         return dict(result, reason=str(error))
 
 
+def assess_without_motion_limits(rows, config):
+    """Describe an unbounded run without reintroducing old motion acceptance gates."""
+    if not rows:
+        return {'result':'inconclusive','reason':'empty log','physical_motion_validated':False}
+    try:
+        for row in rows:
+            for key in ('joint_pos_sdk','joint_vel_sdk','target_pos_sdk','kp_sdk','kd_sdk'):
+                _array(row[key],key)
+            if row.get('feedback',{}).get('control_config_sha256') != config.source_sha256:
+                raise ValueError('日志与当前配置不匹配；保留原版本分析')
+        reason=rows[-1].get('reason','')
+        return {'result':'recorded_without_software_motion_limits','software_motion_limits_enabled':False,
+                'policy_executed':any(r['mode']=='policy' for r in rows),'rows':len(rows),
+                'duration_seconds':rows[-1]['time']-rows[0]['time'],'final_reason':reason,
+                'physical_motion_validated':False,'scope':'日志描述；不以旧运动门槛评判，不替代现场行走观察'}
+    except (ValueError,KeyError,TypeError) as error:
+        return {'result':'inconclusive','reason':str(error),'physical_motion_validated':False}
+
+
 def assess_stand(rows, config):
+    if not config.software_motion_limits_enabled:
+        return assess_without_motion_limits(rows,config)
     result = {'result': 'inconclusive', 'policy_executed': False}
     if any(r.get('mode') == 'policy' for r in rows):
         return dict(result, result='aborted', policy_executed=True, reason='日志包含策略控制')
@@ -1092,6 +1141,8 @@ def assess_stand(rows, config):
 
 
 def assess_policy(rows, config):
+    if not config.software_motion_limits_enabled:
+        return assess_without_motion_limits(rows,config)
     result = {'result': 'inconclusive', 'policy_executed': any(r.get('mode') == 'policy' for r in rows)}
     try:
         forward = any(r.get('feedback', {}).get('stand_profile') == 'forward19' for r in rows)
@@ -1152,6 +1203,8 @@ def assess_policy(rows, config):
         return dict(result, reason=str(error))
 
 def assess_keyboard(rows, config):
+    if not config.software_motion_limits_enabled:
+        return assess_without_motion_limits(rows,config)
     result={'result':'inconclusive','physical_translation_and_stop_confirmed':False}
     fault=next((r.get('feedback',{}).get('policy_fault') for r in rows if r.get('feedback',{}).get('policy_fault')),None)
     if fault is not None: result['policy_fault']=fault
@@ -1582,13 +1635,17 @@ def _serve(args, config, config_sha256):
                                 feedback['policy_entry_blend_seconds'] = test.entry_blend_seconds
                                 feedback['policy_pd_limit_nm'] = test.policy_pd_limit
                                 feedback['policy_feedback_limit_nm'] = test.torque_limit
-                                feedback['settle_tracking_tolerance_rad'] = test.settle_tracking_tolerance
+                                feedback['settle_tracking_tolerance_rad'] = test.settle_tracking_tolerance if config.software_motion_limits_enabled else None
+                                feedback['software_motion_limits_enabled'] = config.software_motion_limits_enabled
+                                feedback['fall_protection_enabled'] = True
+                                feedback['fall_tilt_limit_rad'] = config.safety.get('fall_tilt_limit_rad', .35)
                                 feedback['speed_profile'] = test.speed_profile
                                 feedback['left_speed_mps'] = test.left_speed
-                                feedback['effective_command_limits'] = list(test.controller.config.data['command_limits'])
+                                feedback['effective_command_limits'] = list(test.controller.config.data['command_limits']) if config.software_motion_limits_enabled else None
+                                feedback['keyboard_command_magnitudes'] = list(test.controller.config.data['command_limits'])
                                 feedback['forward_speed_mps'] = test.walk_speed if test.keyboard_axis == 'all' else test.forward_speed if test.forward else 0.
-                                feedback['policy_joint_velocity_limit_rad_s'] = test.policy_velocity_limit
-                                feedback['policy_joint_velocity_limits_sdk_rad_s'] = test.policy_velocity_limits.tolist()
+                                feedback['policy_joint_velocity_limit_rad_s'] = test.policy_velocity_limit if config.software_motion_limits_enabled else None
+                                feedback['policy_joint_velocity_limits_sdk_rad_s'] = test.policy_velocity_limits.tolist() if config.software_motion_limits_enabled else None
                                 feedback['policy_limits_version'] = 'per_joint_v1'
                                 if test.keyboard:
                                     feedback['keyboard_event'] = test.keyboard_event
@@ -1638,6 +1695,7 @@ def _serve(args, config, config_sha256):
 
 
 def run(args, config):
+    config.require_hardware_deployment_allowed()
     path = default_socket(0)
     if os.path.lexists(path):
         raise RuntimeError(f'停止接口已存在: {path}；先检查旧进程，不能覆盖')
@@ -1649,7 +1707,9 @@ def run(args, config):
                '--forward-check' if args.forward_check else '--policy-check' if args.policy_check else '--stand-check' if args.stand_check else '--joint-check' if args.joint_check else '--response-test' if args.response_test else ('--motor-test' if args.motor_test else '--damping-test')]
     if args.policy_check or args.forward_check:
         command.extend([args.forward_check or args.policy_check, '--allow-policy-movement',
-                        '--action-step-mode', resolve_action_step_mode(getattr(args, 'action_step_mode', None), bool(args.forward_check))])
+                        '--action-step-mode', resolve_action_step_mode(
+                            getattr(args, 'action_step_mode', None),
+                            bool(args.forward_check) or config.data.get('format_version') == 2)])
         if args.forward_check:
             command.extend(['--forward-speed', str(args.forward_speed)])
     if args.stand_check or args.policy_check or args.forward_check:

@@ -122,5 +122,6 @@ def action_to_target(action, cfg):
     expected = int(cfg["policy"]["num_actions"])
     if action.shape != (expected,) or not np.isfinite(action).all():
         raise ValueError(f"Invalid policy action: shape={action.shape}, finite={np.isfinite(action).all()}")
-    action = np.clip(action, -float(action_cfg["clip"]), float(action_cfg["clip"]))
+    if cfg.get('software_motion_limits', True):
+        action = np.clip(action, -float(action_cfg["clip"]), float(action_cfg["clip"]))
     return np.asarray(action_cfg["default_joint_pos"], dtype=np.float32) + action * np.asarray(action_cfg["scale"], dtype=np.float32)

@@ -1,0 +1,36 @@
+{
+  "initialization": "fresh_random",
+  "training_run": "logs/go2_him_retrain/reward_restore_v2_20261027_seed42",
+  "iteration": 4000,
+  "seed": 42,
+  "transitions": 131072000,
+  "policy_sha256": "03b2269b482d0421ce2787f49e0efc5975bb9364044ff895280628703ee749a0",
+  "training_manifest_sha256": "ea06f6c283f531e2ee08da3a8aafac878ea707f4a44b8cf1f32d65e0854c42cd",
+  "training_source_manifest_sha256": "9e2c9c6d45d21f2d4343e959a034a66ba4b863f47a7b75cd7c4587b497cc03a3",
+  "architecture": "HIM",
+  "actor_input": 64,
+  "history_input": 270,
+  "latent_size": 16,
+  "action_bound": 4.0,
+  "reward_changes": {
+    "Go2HIMRetrainCfg.rewards.scales.base_height": {
+      "previous": -50.0,
+      "current": -1.0
+    },
+    "Go2HIMRetrainCfg.rewards.scales.smoothness": {
+      "previous": -0.005,
+      "current": -0.01
+    },
+    "Go2HIMRetrainCfg.rewards.scales.action_rate": {
+      "previous": -0.005,
+      "current": -0.01
+    },
+    "Go2HIMRetrainCfg.rewards.scales.foot_clearance": {
+      "previous": -0.1,
+      "current": -0.01
+    }
+  },
+  "sim2sim_report": "logs/go2_him_retrain/reward_restore_v2_20261027_seed42/sim2sim/report.md",
+  "foot_drag_resolved_in_simulation": false,
+  "physical_robot_validated": false
+}

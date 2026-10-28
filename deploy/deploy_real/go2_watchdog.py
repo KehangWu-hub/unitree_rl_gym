@@ -46,7 +46,8 @@ class CommandGate:
         self.config = config
         self.duration = duration
         self.motor_test = motor_test
-        self.safety = Go2Safety(config.safety, config.stiffness, config.damping, config.torque_limits)
+        self.safety = Go2Safety(config.safety, config.stiffness, config.damping, config.torque_limits,
+                                motion_limits_enabled=config.software_motion_limits_enabled)
         self.command = None
         self.command_time = None
         self.started_at = None

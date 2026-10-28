@@ -157,6 +157,14 @@ class HIMTrainingTest(unittest.TestCase):
         self.assertEqual(cfg['observations'][0]['name'], 'velocity_commands')
         self.assertEqual(sum(term['size'] for term in cfg['observations']), 45)
         self.assertEqual(cfg['policy']['policy_to_sdk'], [3,4,5,0,1,2,9,10,11,6,7,8])
+        env.cfg.training_profile = 'go2_him_direct_targets_v3'
+        env.cfg.normalization.clip_actions = 4.
+        with tempfile.TemporaryDirectory() as directory:
+            direct = yaml.safe_load(Path(DEPLOY.export_deploy_config(env, directory, 'go2')).read_text())
+        self.assertFalse(direct['software_motion_limits'])
+        self.assertEqual(direct['control']['joint_target_mode'], 'direct')
+        self.assertNotIn('policy_pd_limit_nm', direct['control'])
+        self.assertNotIn('action_step_limit', direct['control'])
 
 
 if __name__ == "__main__":

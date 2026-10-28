@@ -18,6 +18,73 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 class HIMDeployTest(unittest.TestCase):
+    def test_fresh_commands_have_no_software_motion_clipping(self):
+        config=Go2RealConfig.load(ROOT/'deploy/deploy_real/configs/go2_him_fresh.yaml',str(ROOT))
+        for command in ([0,0,0],[.3,0,0],[-.3,0,0],[0,.3,0],[0,-.3,0],[.3,0,.3],[.3,0,-.3]):
+            np.testing.assert_allclose(config.clip_command(command),command)
+        for command in ([-.3,0,.3],[.3,.3,0],[0,.3,.3],[.8,-.6,.9]):
+            np.testing.assert_allclose(config.clip_command(command),command)
+
+    def test_firmware_only_controller_passes_finite_actions_without_filters(self):
+        cfg=Go2RealConfig.load(ROOT/'deploy/deploy_real/configs/go2_him_fresh.yaml',str(ROOT))
+        controller=Go2Controller(cfg,policy=lambda obs:torch.full((1,12),10.),action_step_mode='limit')
+        controller.fsm.mode=Go2Mode.POLICY
+        state=Go2State(1.,np.array([1.,0,0,0]),np.zeros(3),
+                       cfg.default_joint_pos[cfg.sdk_to_policy],np.full(12,40.))
+        out=controller.step(1.,state)
+        self.assertEqual(out.mode,Go2Mode.POLICY)
+        expected=(cfg.default_joint_pos+2.5)[cfg.sdk_to_policy]
+        np.testing.assert_allclose(out.target_pos_sdk,expected)
+        self.assertEqual(controller.last_action_processing['mode'],'passthrough')
+        self.assertFalse(controller.last_target_processing['clipped_joints'])
+        controller.emergency_stop(1.01)
+        state.timestamp=1.01
+        self.assertEqual(controller.step(1.01,state).mode,Go2Mode.DAMPING)
+
+    def test_firmware_only_policy_does_not_stop_on_recorded_torque_threshold(self):
+        cfg=Go2RealConfig.load(ROOT/'deploy/deploy_real/configs/go2_him_fresh.yaml',str(ROOT))
+        trial=PolicyCheck(cfg,None,policy=lambda obs:torch.zeros((1,12)),forward=True)
+        q=cfg.default_joint_pos[cfg.sdk_to_policy]
+        state=Go2State(1.,np.array([1.,0,0,0]),np.zeros(3),q,np.zeros(12))
+        state.feedback={'joint_tau_est_sdk':[0.]*8+[17.2116603851]+[0.]*3,'state_tick':1}
+        trial.arm(1.,state)
+        trial.hold_samples=100;trial.hold_first=6.;trial.hold_last=7.
+        state.timestamp=8.
+        out=trial.output(8.,state)
+        self.assertEqual(out.mode,Go2Mode.POLICY)
+        self.assertFalse(trial.reason)
+        self.assertIsNone(trial.policy_pd_limit)
+        self.assertIsNone(trial.torque_limit)
+        state.timestamp=8.002;state.feedback['joint_tau_est_sdk']=[100.]*12
+        self.assertEqual(trial.output(8.002,state).mode,Go2Mode.POLICY)
+        state.timestamp=7.
+        self.assertEqual(trial.output(8.004,state).mode,Go2Mode.DAMPING)
+
+    def test_firmware_only_keyboard_does_not_add_acceleration_or_reversal_limit(self):
+        cfg=Go2RealConfig.load(ROOT/'deploy/deploy_real/configs/go2_him_fresh.yaml',str(ROOT))
+        trial=PolicyCheck(cfg,None,policy=lambda obs:torch.zeros((1,12)),forward=True,forward_speed=.4,
+                          keyboard=True,keyboard_axis='all',continuous=True,turn_forward_speed=.3)
+        trial.started=0.
+        trial.feed_key('w',8.)
+        np.testing.assert_allclose(trial.velocity_profile(8.),[.3,0,0])
+        trial.feed_key('s',8.02)
+        np.testing.assert_allclose(trial.velocity_profile(8.02),[-.3,0,0])
+        trial.feed_key('x',8.04)
+        np.testing.assert_allclose(trial.velocity_profile(8.04),[0,0,0])
+
+    def test_firmware_only_watchdog_preserves_targets_but_honors_manual_stop(self):
+        from deploy.deploy_real.go2_watchdog import CommandGate
+        cfg=Go2RealConfig.load(ROOT/'deploy/deploy_real/configs/go2_him_fresh.yaml',str(ROOT))
+        q=cfg.default_joint_pos[cfg.sdk_to_policy]
+        state=Go2State(1.,np.array([1.,0,0,0]),np.zeros(3),q,np.full(12,40.))
+        target=q+2.5;gate=CommandGate(cfg,2.)
+        gate.accept({'time':1.,'mode':'policy','target':target.tolist(),'kp':[20.]*12,'kd':[.5]*12},1.,state)
+        output=gate.output(1.02,state)
+        self.assertEqual(output.mode,Go2Mode.POLICY)
+        np.testing.assert_array_equal(output.target_pos_sdk,target)
+        gate.stop(1.03,'manual stop')
+        self.assertEqual(gate.output(1.03,state).mode,Go2Mode.DAMPING)
+
     def setUp(self):
         self.config=Go2RealConfig.load(ROOT/'deploy/deploy_real/configs/go2_him.yaml',str(ROOT))
 
@@ -98,6 +165,22 @@ class HIMDeployTest(unittest.TestCase):
             PolicyCheck(self.config,'unused',forward=True,keyboard=True,keyboard_axis='all',
                         forward_speed=.4,continuous=True,speed_profile='uniform',
                         walk_speed=.5,left_speed=.4,yaw_speed=.5,turn_forward_speed=.5)
+
+    def test_zero_launcher_forwards_him_action_limit_to_child(self):
+        from deploy.deploy_real import go2_commission as commission
+        path=ROOT/'deploy/deploy_real/configs/go2_him.yaml'
+        argv=commission_arguments('zero','eno1','new_stand.jsonl',config_path=path)
+        with patch('sys.stdin.isatty',return_value=True):
+            args=parse_args(argv)
+        # Stop at process creation: no DDS or physical command can be produced.
+        with patch.object(commission.os.path,'lexists',return_value=False), \
+             patch.object(commission.subprocess,'Popen',side_effect=RuntimeError('launch intercepted')) as launch:
+            with self.assertRaisesRegex(RuntimeError,'launch intercepted'):
+                commission.run(args,self.config)
+        child=launch.call_args.args[0]
+        self.assertEqual(child[child.index('--action-step-mode')+1],'limit')
+        self.assertEqual(float(child[child.index('--duration')+1]),30.)
+        self.assertEqual(child[child.index('--policy-check')+1],'new_stand.jsonl')
 
 
 if __name__=='__main__':unittest.main()

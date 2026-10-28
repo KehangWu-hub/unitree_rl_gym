@@ -29,7 +29,7 @@ TorchScript 策略
     └── Go2：只读检查 → 站姿接管 → 受限运动
 ```
 
-| 策略参数 | 原 PPO（`go2`） | HIM（`go2_him`） |
+| 策略参数 | 原 PPO（`go2`） | HIM（`go2_him_retrain`） |
 |---|---|---|
 | 部署模型输入 | 45维单帧观测 | 270维历史（6 × 45，最新帧在前） |
 | Actor输入 | 45维 | 64维＝当前观测45＋估计速度3＋隐变量16 |
@@ -38,26 +38,35 @@ TorchScript 策略
 | 策略周期 | 20ms（50Hz） | 20ms（50Hz） |
 | 动作缩放 | 0.25 | 0.25 |
 | 策略PD增益 | Kp＝20，Kd＝0.5 | Kp＝20，Kd＝0.5 |
-| 预训练策略 | `deploy/pre_train/go2/motion.pt` | `deploy/pre_train/go2_him/policy.pt` |
+| 预训练策略 | `deploy/pre_train/go2/motion.pt` | `deploy/pre_train/go2_him_fresh/policy.pt` |
 
 HIM结构如下。部署时只保留历史编码器和Actor；Target Encoder、对比学习和Critic参与训练。
 图中隐式状态在当前配置中为16维，另有3维显式速度估计。
 
 ![HIM混合内部模型与策略训练结构](doc/images/HIM.png)
 
+HIM候选尚未完成可靠真机部署。v3在MuJoCo已出现停步失稳，随后实机翻车并持续输出位置控制，当前已封停v3真机入口。独立倾角保护已恢复，不受动作/力矩整形开关影响，触发后锁定零Kp阻尼；该修复仅完成离线验证，未再次操作真机。旧候选及失败证据保留，不能将接口或机身指标通过视为步态合格。
+
 HIM模型接口与权重替换方法见 [模型说明](deploy/pre_train/go2_him/README.md)。
 本地继续训练的候选模型须通过同一套仿真验收，才能替换部署权重。
 
-## 目录用途
+## 架构与职责
 
 | 目录 | 用途 |
 |---|---|
 | `legged_gym/` | Isaac Gym 训练、策略回放和导出 |
-| `deploy/deploy_mujoco/` | 普通 MuJoCo 运行与键盘流程验证 |
+| `deploy/deploy_mujoco/` | MuJoCo运行、独立步态指标、断点评估和录像 |
 | `deploy/deploy_real/` | 真机连接、控制和停止 |
-| `deploy/common/` | 策略接口，以及保留供研究复用的速度反馈实现 |
+| `deploy/common/` | 共用策略接口、速度估计、反馈控制与评估证据校验 |
 | `tests/` | 自动检查代码、限制与停止逻辑；日常运行不需要打开 |
+| `third_party/` | 固定版本的HIM算法实现 |
+| `resources/` | Go2机器人模型与仿真资产 |
+| `deploy/pre_train/` | 成套部署模型、参数与版本记录 |
 | `logs/` | 本地训练记录、实验数据和图表，不随 Git 上传 |
+
+策略接口负责观测历史和动作转换；训练与仿真工具通过该接口对齐模型约定。真机侧另包含DDS通信、状态机与独立停止保护。MuJoCo步态指标集中在 `gait_metrics.py`，比较与断点监控入口复用同一实现。
+
+模型版本由权重、`deploy.yaml` 和记录摘要共同标识。历史实验保留在 `logs/`，软件流程通过与步态质量通过分别记录。
 
 ## 开始使用
 
@@ -106,6 +115,8 @@ logs/rough_go2_45x60_rewards/exported/
 
 #### HIM训练任务
 
+从零训练入口为 `legged_gym/scripts/train_him_from_scratch.py`，断点续训为 `continue_him_training.py`。训练profile区分平地基线与混合地形候选，参数以各运行目录中的 `env.yaml`、`train.yaml` 和源码快照为准。
+
 `go2_him` 使用 Isaac Gym 和项目内固定版本的 HIMLoco 算法，输入为六帧45维观测；
 历史编码器估计速度与隐变量，和当前观测一起输入Actor。无需替换已安装的 `rsl_rl`。
 
@@ -148,15 +159,14 @@ python deploy/deploy_mujoco/deploy_go2.py \
 
 ### 真机部署
 
-真机控制使用 `go2_keyboard`，默认统一接收 Q/W/E/A/S/D，X 将速度归零，也保留单方向检查模式。从原厂站稳接管后，统一模式默认持续运行，C 受控降低并退出，Z/Ctrl+C 或第二终端停止紧急阻尼退出；可用 `--motion-seconds 4` 或 `10` 选择自动归零和降低的短时检查。运动入口默认对合法动作做步长限幅。默认 W/S 为 ±0.50m/s、A/D 为 ±0.40m/s；Q/E 为前进 0.50m/s 加转向 ±0.50rad/s。这些是策略指令，实际速度取决于跟踪效果。
+真机入口为 `go2_keyboard`，具体接管、配置选择和停止流程见[Go2部署指南](deploy/deploy_real/README_GO2.zh.md)及[HIM部署指南](deploy/deploy_real/README_GO2_HIM.zh.md)。模型切换后需要重新核对对应的仿真证据和现场记录。
 
-历史单独 A 速度对照可显式使用 `--speed-profile legacy --walk-speed 0.5 --left-speed 0.4`，D保持0.30，见[速度对照步骤](deploy/deploy_real/README_GO2.zh.md#单独对照左移速度)。
+| 默认键盘模式 | W / S | A / D | Q / E |
+|---|---|---|---|
+| PPO统一模式 | 前后±0.50m/s | 左右±0.40m/s | 前进0.50m/s＋转向±0.50rad/s |
+| HIM历史模式 | 前后±0.30m/s | 左右±0.30m/s | 前进0.30m/s＋转向±0.30rad/s |
 
-左移起步恢复候选可用 `--gait-restart`：检测到左移步态持续静止后，平滑回站姿并重新起步一次。使用与停止方法见[真机指南](deploy/deploy_real/README_GO2.zh.md#左移起步恢复候选)。
-
-原厂速度消息在当前低层接管后不可用。已接入关节与IMU运动学速度估计，首轮用 `--velocity-source kinematic --velocity-feedback shadow` 记录估计，保持普通控制输出；核对真机速度量级后再启用PI。可选仅 PI 候选的反馈检查、低速参数和运行步骤见[速度反馈运行说明](deploy/deploy_real/README_GO2.zh.md)。
-
-部署需要匹配当前模型与配置的站立、零速度前置记录；这些记录保存在本机，克隆仓库后需自行完成检查。连接、前置流程、运行命令及停止方法见 **[Go2 真机部署指南](deploy/deploy_real/README_GO2.zh.md)**。
+表中是策略指令，实际速度取决于跟踪效果。默认命令选择PPO配置；HIM需显式指定匹配的模型配置和记录。独立倾角停止保护不随动作整形开关关闭。速度估计、PI反馈及起步恢复等研究选项见部署指南。
 
 已激活 `unitree-rl` 环境且机器人原厂站稳时，运行：
 
@@ -175,34 +185,23 @@ python -m deploy.deploy_real.go2_keyboard --run
 
 C 用于默认持续模式，按一次即可；退出过程中仍可按 Z 紧急终止。可选短时检查自动降低，方向切换无需先按 X。
 
-## 测试
+## 开发与检查
+
+在已安装依赖的环境中，从项目根目录运行：
 
 ```bash
-conda activate unitree-rl
-python -m unittest discover -s tests -p 'test_go2*.py'
+make help
+make test       # 全部离线测试，关闭可选DDS集成测试
+make check      # 检查补丁空白错误
+make clean      # 清除源码目录中的Python缓存
 ```
 
-测试覆盖策略接口、模型与关节映射、状态机、保护逻辑、键盘输入和看门狗。默认跳过需要本地 DDS 网络的集成测试。启用 MuJoCo / DDS 停止机制测试：
+可用 `make test PYTHON=/path/to/python` 指定解释器。测试覆盖策略接口、训练约定、MuJoCo模型、状态机、速度估计和停止保护；部分测试需要本地回环socket权限。`make`入口不会连接或控制机器人。
+
+可选DDS集成测试需单独启用，运行环境要求见部署指南：
 
 ```bash
 GO2_DDS_TESTS=1 python -m unittest discover -s tests -p test_go2_watchdog.py -v
-```
-
-## 项目结构
-
-```text
-legged_gym/                 Isaac Gym 环境、训练和策略导出
-  envs/go2/                原 PPO 配置与观测定义
-  envs/go2_him/            HIM 环境、配置与完整模型导出
-deploy/
-  common/                  共用策略接口
-  deploy_mujoco/           MuJoCo 运行与诊断
-  deploy_real/             DDS 通信、真机控制与日志
-  pre_train/go2/           原冻结 TorchScript 模型
-  pre_train/go2_him/       HIM 模型、接口与版本记录
-resources/robots/go2/      URDF、MJCF 与模型资产
-tests/                     Go2 软件与集成测试
-doc/                       安装与技术文档
 ```
 
 本项目基于 [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) 和 [HIMLoco](https://github.com/InternRobotics/HIMLoco) 等开源实现开发，许可证见 [LICENSE](LICENSE)。

@@ -1,5 +1,6 @@
 """HIM sim2sim and real-controller flow audit. No DDS initialization or robot access."""
 import argparse
+from collections import deque
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -9,10 +10,10 @@ import numpy as np
 import torch
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
-from deploy.common.go2_policy import PolicyObservationHistory, build_observation, action_to_target, projected_gravity
+from deploy.common.go2_policy import PolicyObservationHistory, build_observation, action_to_target, projected_gravity, resolve_path
 from deploy.common.him_qualification import sha256, current_sources
 from deploy.deploy_mujoco.deploy_go2 import joint_addresses, apply_model_overrides, load_runtime_config
-from deploy.deploy_real.deploy_real_go2 import Go2RealConfig, Go2State, Go2Mode
+from deploy.deploy_real.deploy_real_go2 import Go2RealConfig, Go2State, Go2Mode, Go2Controller
 from deploy.deploy_real.go2_commission import PolicyCheck
 
 ROOT = Path(LEGGED_GYM_ROOT_DIR)
@@ -29,10 +30,13 @@ class SimulationPolicyCheck(PolicyCheck):
             raise ValueError('Simulation must not consume physical readiness')
 
 
-def simulate(config, label, command, protected=False, exit_key='c', original_dynamics=False, stage='keyboard'):
+def simulate(config, label, command, protected=False, exit_key='c', original_dynamics=False, stage='keyboard', long_trial=False,
+             actuator_cap='mechanical', command_delay_ms=0., state_delay_ms=0., motor_strength=1., keyboard_start=8., joint_trace=None, observer=None):
+    if actuator_cap not in ('mechanical','ideal-policy') or not 0 <= command_delay_ms <= 50 or not 0 <= state_delay_ms <= 50 or not .5 <= motor_strength <= 1.5 or keyboard_start not in (8.,9.):
+        raise ValueError('Invalid actuator sensitivity parameters')
     model = mujoco.MjModel.from_xml_path(str(ROOT / 'resources/robots/go2/mjcf/scene_flat.xml'))
     model.opt.timestep = .001  # Two physics/PD substeps per 500Hz command publication.
-    runtime = load_runtime_config(ROOT / 'deploy/deploy_mujoco/configs/go2_him.yaml')
+    runtime = load_runtime_config(resolve_path(config.data.get('mujoco_runtime_config', str(ROOT / 'deploy/deploy_mujoco/configs/go2_him.yaml')),str(ROOT)))
     if not original_dynamics:
         apply_model_overrides(model, runtime.get('model_overrides', {}))
     data = mujoco.MjData(model)
@@ -51,6 +55,16 @@ def simulate(config, label, command, protected=False, exit_key='c', original_dyn
     kp, kd = config.stiffness[config.sdk_to_policy], config.damping[config.sdk_to_policy]
     torque_limits = config.torque_limits[config.sdk_to_policy]
     torque_limits = np.minimum(torque_limits, model.actuator_ctrlrange[motors, 1])
+    processor = None
+    if config.data.get('training_profile'):
+        processor = Go2Controller(config,policy=policy,action_step_mode='limit')
+        processor.action_step_limit = config.data['control'].get('action_step_limit',processor.action_step_limit)
+        if actuator_cap == 'ideal-policy':
+            if 'policy_pd_limit_nm' not in config.data['control']:
+                raise ValueError('This direct-target profile has no nominal PD cap to reproduce')
+            # Diagnostic reproduction of the old idealized motor, not the SDK's
+            # position-servo interface: no actual 14Nm actuator cap is transmitted.
+            torque_limits = np.minimum(torque_limits,config.data['control']['policy_pd_limit_nm'])
     tau = data.ctrl[motors].copy()
     base_id = model.body('base_link').id
     trial = None
@@ -74,19 +88,30 @@ def simulate(config, label, command, protected=False, exit_key='c', original_dyn
     samples, fault, fell = [], '', False
     exit_state = None
     accepted_keys = set()
-    max_tau, action_limited, max_action_delta = 0., 0, 0.
+    states = deque(maxlen=100)
+    pending = deque()
+    delayed_command = (nominal.copy(),np.full(12,40.),np.ones(12))
+    max_tau, action_limited, max_action_delta, max_action = 0., 0, 0., 0.
     stop_at, exit_at = (15., 19.) if protected else (10., 13.)
     if protected and stage != 'keyboard':
         stop_at, exit_at = (10., 12.) if stage == 'forward' else (9., 9.)
     horizon = 46. if protected else 13.
+    if long_trial:
+        if not protected or stage != 'keyboard':
+            raise ValueError('Long acceptance requires the protected keyboard controller')
+        stop_at, exit_at, horizon = keyboard_start+40., keyboard_start+50., keyboard_start+77.
     for tick in range(int(horizon / .002)):
         t = tick * .002
         now = 1.+t
+        if joint_trace is not None:
+            joint_trace.append([t,*data.qpos[pos],*data.qvel[vel],*target,*kp,*kd,*tau])
         if protected:
-            if stage == 'keyboard' and 9. <= t < stop_at and tick % 20 == 0 and label != 'zero':
+            if stage == 'keyboard' and keyboard_start <= t < stop_at and tick % 20 == 0 and label != 'zero':
                 key = label
+                if long_trial and t >= keyboard_start+20.:
+                    key = {'w':'s','s':'w','a':'d','d':'a','q':'e','e':'q'}.get(key,key)
                 if label == 'switch':
-                    key = ('w','a','q','s','d','e')[min(5, int(t-9.))]
+                    key = ('w','a','q','s','d','e')[min(5, int(t-keyboard_start))]
                 trial.feed_key(key, now)
                 if trial.keyboard_event and trial.keyboard_event['accepted']:
                     accepted_keys.add(key)
@@ -97,7 +122,13 @@ def simulate(config, label, command, protected=False, exit_key='c', original_dyn
                     trial.stop(now, 'simulation Z emergency stop')
                 else:
                     trial.feed_key('c', now)
-            out = trial.output(now, state(now, tick))
+            states.append(state(now,tick))
+            old_state = states[0]
+            for candidate in states:
+                if candidate.timestamp <= now-state_delay_ms/1000.+1e-9:
+                    old_state = candidate
+            out = trial.output(now, old_state)
+            max_action = max(max_action,float(np.max(np.abs(trial.controller.previous_policy_action))))
             target, kp, kd = out.target_pos_sdk, out.kp_sdk, out.kd_sdk
             current_command = trial.controller.command.copy()
             if out.mode is Go2Mode.DAMPING:
@@ -122,7 +153,15 @@ def simulate(config, label, command, protected=False, exit_key='c', original_dyn
             obs = history.append(frame)
             with torch.inference_mode():
                 action = policy(torch.from_numpy(obs).unsqueeze(0)).numpy().reshape(-1)
-            policy_target = action_to_target(action, config.data)
+            applied = action
+            if processor is not None:
+                applied = processor.process_policy_action(action)
+                processor.last_action = applied
+            policy_target = action_to_target(applied, config.data)
+            if processor is not None:
+                policy_target = processor.safety.limit_target(policy_target)
+                policy_target = processor.safety.limit_pd_target(policy_target,data.qpos[pos][mapping],
+                    data.qvel[vel][mapping],config.stiffness,config.damping,14.)
             action = np.clip(action,-config.data['actions']['clip'],config.data['actions']['clip'])
             target = policy_target[config.sdk_to_policy]
         if tick % 10 == 0:
@@ -137,12 +176,22 @@ def simulate(config, label, command, protected=False, exit_key='c', original_dyn
                 if not protected or trial.normal_exit is None:
                     fell = True
                     break
-        tau = kp * (target-data.qpos[pos])-kd*data.qvel[vel]
+        if observer is not None:
+            observer(model,data,t,current_command)
+        if command_delay_ms:
+            pending.append((now+command_delay_ms/1000.,target.copy(),kp.copy(),kd.copy()))
+            while pending and pending[0][0] <= now+1e-9:
+                _,target_ready,kp_ready,kd_ready = pending.popleft()
+                delayed_command = (target_ready,kp_ready,kd_ready)
+            target,kp,kd = delayed_command
+        tau = motor_strength*(kp * (target-data.qpos[pos])-kd*data.qvel[vel])
         max_tau = max(max_tau, float(np.max(np.abs(tau))))
         data.ctrl[motors] = np.clip(tau,-torque_limits,torque_limits)
+        tau = data.ctrl[motors].copy()
         mujoco.mj_step(model,data)
-        tau = kp * (target-data.qpos[pos])-kd*data.qvel[vel]
+        tau = motor_strength*(kp * (target-data.qpos[pos])-kd*data.qvel[vel])
         data.ctrl[motors] = np.clip(tau,-torque_limits,torque_limits)
+        tau = data.ctrl[motors].copy()
         mujoco.mj_step(model,data)
     rows = np.asarray(samples)
     moving_begin = (8.3 if stage == 'forward' else 7.5) if protected and stage != 'keyboard' else 10. if protected else 2.
@@ -161,7 +210,23 @@ def simulate(config, label, command, protected=False, exit_key='c', original_dyn
     tracking = bool(len(moving) and (label == 'switch' or np.all(ratio >= .5)) and np.all(rmse <= [.20,.20,.25]))
     flow = not protected or (fault == ('simulation Z emergency stop' if exit_key == 'z' else '测试时长结束') and t >= exit_at)
     passed = bool(not fell and flow and tracking and zero_ok and residual < .08 and residual_yaw < .15)
+    strict = None
+    if long_trial:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('him_acceptance', ROOT/'legged_gym/envs/go2_him/acceptance.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        scored = rows[(rows[:,0] >= keyboard_start) & (rows[:,0] < keyboard_start+50.)].copy()
+        scored[:,0] -= keyboard_start
+        # The production controller rejects any raw action beyond max_action.
+        strict = module.assess_motion(scored, reset_count=int(fell), action_max=max_action)
+        passed = bool(flow and not fell and strict['passed'])
     return {'label':label, 'stage':stage, 'protected':protected, 'exit_key':exit_key,
+            'strict_acceptance':strict,
+            'actuator_cap':actuator_cap,'command_delay_ms':command_delay_ms,'state_delay_ms':state_delay_ms,'motor_strength':motor_strength,
+            'keyboard_start_seconds':keyboard_start,
+            'actual_torque_limits_sdk':torque_limits.tolist(),
+            'feedback_torque_model':'computed_applied_motor_torque; actuator dynamics and hardware estimator are not calibrated',
             'physics_dt':float(model.opt.timestep), 'publish_dt':.002,
             'dynamics':'original_mjcf' if original_dynamics else 'training_overrides',
             'passed':passed, 'flow_passed':bool(flow), 'tracking_passed':tracking, 'fell':fell,
@@ -176,12 +241,14 @@ def qualify(directory, config, config_path):
     paths = {stage:directory/name for stage,name in {
         'raw':'final_raw/summary.json', 'protected':'final_protected/summary.json',
         'zero':'zero_stage/summary.json', 'forward':'forward_stage/summary.json'}.items()}
-    sources = current_sources()
+    sources = current_sources(config)
     policy_hash, config_hash = sha256(config.policy_path), sha256(config_path)
     reports = {stage:json.loads(path.read_text()) for stage,path in paths.items()}
     for stage, data in reports.items():
         if not data['passed'] or data.get('source_sha256') != sources or data['policy_sha256'] != policy_hash or data['config_sha256'] != config_hash:
             raise ValueError(f'Incomplete or stale evidence: {stage}; rerun this stage')
+        if config.data.get('training_profile') and any(r.get('actuator_cap') != 'mechanical' or r.get('command_delay_ms') or r.get('state_delay_ms') or r.get('motor_strength') != 1. for r in data['cases']):
+            raise ValueError(f'Qualification requires the mechanical-cap baseline: {stage}')
     keys = {'zero','w','s','a','d','q','e'}
     if {r['label'] for r in reports['raw']['cases']} != keys:
         raise ValueError('Raw policy evidence must include zero and six direction commands')
@@ -218,13 +285,20 @@ def qualify(directory, config, config_path):
     compare_path.write_text(json.dumps(comparison,indent=2)+'\n')
     if not comparison['passed']:
         raise ValueError('Isaac Gym / MuJoCo velocity difference exceeds 0.05')
+    if config.data.get('training_profile'):
+        for stage,name in (('isaac_acceptance','isaac_acceptance.json'),('mujoco_acceptance','mujoco_acceptance.json')):
+            path = directory/name
+            data = json.loads(path.read_text())
+            if not data.get('passed') or data.get('policy_sha256') != policy_hash or data.get('command_profile') != 'keyboard':
+                raise ValueError(f'Fresh policy strict acceptance missing or failed: {stage}')
+            paths[stage] = path
     paths['comparison'] = compare_path
     paths['isaac'] = isaac_path
     result = {'simulation_only':True, 'passed':True, 'policy_sha256':policy_hash,
               'config_sha256':config_hash, 'source_sha256':sources,
               'evidence':{stage:{'path':str(path.resolve().relative_to(ROOT)), 'sha256':sha256(path)} for stage,path in paths.items()},
               'scope':'Flat ground; 0.30 m/s translations and 0.30 rad/s walking turns, X zero, C lowering, Z stop. Field commissioning required.'}
-    output = ROOT/'logs/go2_him/qualification.json'
+    output = Path(resolve_path(config.data['qualification_report'],str(ROOT)))
     output.parent.mkdir(parents=True,exist_ok=True)
     output.write_text(json.dumps(result,indent=2)+'\n')
     print(json.dumps(result,indent=2))
@@ -240,11 +314,19 @@ def main():
     parser.add_argument('--stage', choices=('keyboard','zero','forward'), default='keyboard')
     parser.add_argument('--protected', action='store_true')
     parser.add_argument('--original-dynamics',action='store_true')
+    parser.add_argument('--long-trial',action='store_true',help='50 seconds of motion/reversal/stop through the production keyboard controller')
+    parser.add_argument('--actuator-cap',choices=('mechanical','ideal-policy'),default='mechanical')
+    parser.add_argument('--command-delay-ms',type=float,default=0.,help='Uncalibrated sensitivity experiment; not a measured hardware parameter')
+    parser.add_argument('--state-delay-ms',type=float,default=0.,help='Uncalibrated sensitivity experiment; not a measured hardware parameter')
+    parser.add_argument('--motor-strength',type=float,default=1.,help='Uncalibrated torque-response sensitivity multiplier')
+    parser.add_argument('--keyboard-start',type=float,choices=(8.,9.),default=8.,help='Earliest real keyboard entry is 8 seconds; 9 reproduces the previous test')
+    parser.add_argument('--joint-trace',action='store_true',help='Save SDK-order joint/PD telemetry at each 2ms publication for offline field comparison')
     parser.add_argument('--keys', nargs='+',choices=('zero','w','s','a','d','q','e','switch'),default=['zero','w','s','a','d','q','e'])
     args = parser.parse_args()
-    sources = current_sources()
     torch.set_num_threads(1)
     config=Go2RealConfig.load(args.config,str(ROOT))
+    source_config=config
+    sources=current_sources(source_config)
     if args.policy is not None:
         config=replace(config,policy_path=str(args.policy.resolve()))
     args.output.mkdir(parents=True,exist_ok=True)
@@ -260,15 +342,21 @@ def main():
         args.keys=['zero' if args.stage == 'zero' else 'w']
     results=[]
     for key in args.keys:
-        report,samples=simulate(config,key,commands[key],args.protected,original_dynamics=args.original_dynamics,stage=args.stage)
+        joint_trace=[] if args.joint_trace else None
+        report,samples=simulate(config,key,commands[key],args.protected,original_dynamics=args.original_dynamics,stage=args.stage,long_trial=args.long_trial,
+            actuator_cap=args.actuator_cap,command_delay_ms=args.command_delay_ms,state_delay_ms=args.state_delay_ms,motor_strength=args.motor_strength,keyboard_start=args.keyboard_start,joint_trace=joint_trace)
         results.append(report)
-        np.savez_compressed(args.output/(key+'.npz'), samples=samples)
+        arrays={'samples':samples}
+        if joint_trace is not None:
+            arrays['joint_samples']=np.asarray(joint_trace)
+        np.savez_compressed(args.output/(key+'.npz'), **arrays)
         print(json.dumps(report,ensure_ascii=False),flush=True)
     if args.protected and args.stage == 'keyboard' and 'switch' in args.keys:
         report,samples=simulate(config,'w',commands['w'],True,exit_key='z',original_dynamics=args.original_dynamics)
         results.append(report)
         np.savez_compressed(args.output/'z_exit.npz', samples=samples)
-    result={'simulation_only':True,'passed':all(r['passed'] for r in results) and current_sources() == sources,'cases':results,
+    result={'simulation_only':True,'passed':all(r['passed'] for r in results) and current_sources(source_config) == sources,'cases':results,
+            'command_profile':'keyboard',
             'source_sha256': sources,
             'policy_sha256':sha256(config.policy_path),'config_sha256':sha256(args.config)}
     (args.output/'summary.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n')

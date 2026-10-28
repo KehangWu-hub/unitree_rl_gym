@@ -1,0 +1,152 @@
+format_version: 2
+robot: go2
+step_dt: 0.020000000949949026
+policy:
+  num_observations: 270
+  num_actions: 12
+  joint_names:
+  - FL_hip_joint
+  - FL_thigh_joint
+  - FL_calf_joint
+  - FR_hip_joint
+  - FR_thigh_joint
+  - FR_calf_joint
+  - RL_hip_joint
+  - RL_thigh_joint
+  - RL_calf_joint
+  - RR_hip_joint
+  - RR_thigh_joint
+  - RR_calf_joint
+  sdk_joint_names:
+  - FR_hip_joint
+  - FR_thigh_joint
+  - FR_calf_joint
+  - FL_hip_joint
+  - FL_thigh_joint
+  - FL_calf_joint
+  - RR_hip_joint
+  - RR_thigh_joint
+  - RR_calf_joint
+  - RL_hip_joint
+  - RL_thigh_joint
+  - RL_calf_joint
+  policy_to_sdk:
+  - 3
+  - 4
+  - 5
+  - 0
+  - 1
+  - 2
+  - 9
+  - 10
+  - 11
+  - 6
+  - 7
+  - 8
+  architecture: him
+  num_one_step_observations: 45
+  history_length: 6
+  history_order: newest_first
+  history_reset: zero_previous_frames
+  estimated_velocity_scale: 2.0
+  latent_size: 16
+  observation_clip: 100.0
+  last_action_semantics: previous_clipped_policy_action
+  action_distribution: scaled_tanh_normal
+  action_bound: 4.0
+observations:
+- name: velocity_commands
+  size: 3
+  scale:
+  - 2.0
+  - 2.0
+  - 0.25
+- name: base_ang_vel
+  size: 3
+  scale: 0.25
+- name: projected_gravity
+  size: 3
+  scale: 1.0
+- name: joint_pos_rel
+  size: 12
+  scale: 1.0
+- name: joint_vel
+  size: 12
+  scale: 0.05
+- name: last_action
+  size: 12
+  scale: 1.0
+actions:
+  type: joint_position
+  scale: 0.25
+  clip: 4.0
+  default_joint_pos:
+  - 0.10000000149011612
+  - 0.800000011920929
+  - -1.5
+  - -0.10000000149011612
+  - 0.800000011920929
+  - -1.5
+  - 0.10000000149011612
+  - 1.0
+  - -1.5
+  - -0.10000000149011612
+  - 1.0
+  - -1.5
+control:
+  stiffness:
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  damping:
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  torque_limits:
+  - 23.700000762939453
+  - 23.700000762939453
+  - 35.54999923706055
+  - 23.700000762939453
+  - 23.700000762939453
+  - 35.54999923706055
+  - 23.700000762939453
+  - 23.700000762939453
+  - 35.54999923706055
+  - 23.700000762939453
+  - 23.700000762939453
+  - 35.54999923706055
+  joint_target_mode: direct
+commands:
+  lin_vel_x:
+  - -0.5
+  - 0.5
+  lin_vel_y:
+  - -0.35
+  - 0.35
+  ang_vel_yaw:
+  - -0.5
+  - 0.5
+training_profile: go2_him_direct_targets_v3
+software_motion_limits: false
+training_source:
+  repository: https://github.com/1170632760/HIMLOCO_GO2
+  commit: 2e70bcf66d2a479add5a688ed4d78d863d166c11
+  task: go2_him_retrain

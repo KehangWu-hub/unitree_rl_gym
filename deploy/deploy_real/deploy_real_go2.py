@@ -124,6 +124,8 @@ class Go2RealConfig:
         if not isinstance(data, dict) or data.get("robot") != "go2":
             raise ValueError("真机配置必须声明robot: go2")
         validate_policy_config(data)
+        if type(data.get('software_motion_limits', True)) is not bool:
+            raise ValueError('software_motion_limits必须为布尔值')
         mapping = np.asarray(data["policy"]["policy_to_sdk"], dtype=np.int64)
         if sorted(mapping.tolist()) != list(range(12)):
             raise ValueError("policy_to_sdk必须是0到11的完整排列")
@@ -147,8 +149,22 @@ class Go2RealConfig:
     def safety(self):
         return self.data["safety"]
 
+    @property
+    def software_motion_limits_enabled(self):
+        return self.data.get('software_motion_limits', True)
+
+    def require_hardware_deployment_allowed(self):
+        if self.data.get('hardware_deployment_blocked', False):
+            raise ValueError(self.data.get('hardware_deployment_block_reason', '此候选已封停，禁止真机接管'))
+
     def clip_command(self, command):
         command = _array(command, "command", size=3)
+        if not self.software_motion_limits_enabled:
+            return command.copy()
+        if self.data.get('command_profile') == 'keyboard_v1':
+            x, y, yaw = command
+            if (abs(y) > 1e-7 and (abs(x) > 1e-7 or abs(yaw) > 1e-7)) or (x < -1e-7 and abs(yaw) > 1e-7):
+                raise ValueError('当前模型未验证斜移或后退叠加转向指令')
         limits = _array(self.data["command_limits"], "command_limits", size=3)
         return np.clip(command, -limits, limits)
 
@@ -224,11 +240,14 @@ class SafetyResult:
 class Go2Safety:
     """检查状态和待发送策略命令，不依赖DDS。"""
 
-    def __init__(self, config, stiffness, damping, torque_limits):
+    def __init__(self, config, stiffness, damping, torque_limits, motion_limits_enabled=True):
+        self.motion_limits_enabled = bool(motion_limits_enabled)
         self.state_timeout = float(config["state_timeout"])
         self.max_loop_dt = float(config["max_loop_dt"])
         self.max_roll = float(config["max_roll"])
         self.max_pitch = float(config["max_pitch"])
+        self.fall_tilt_limit = float(config.get('fall_tilt_limit_rad', .35))
+        require_safe_attitude(0., 0., self.fall_tilt_limit)
         self.max_joint_velocity = float(config["max_joint_velocity"])
         self.joint_velocity_limits = np.full(12, self.max_joint_velocity)
         self.max_action = float(config["max_action"])
@@ -259,6 +278,12 @@ class Go2Safety:
             return self._fail("LowState通信超时")
         if loop_dt is not None and (not np.isfinite(loop_dt) or loop_dt > self.max_loop_dt or loop_dt < 0):
             return self._fail("控制循环超时")
+        try:
+            require_safe_attitude(roll, pitch, self.fall_tilt_limit)
+        except ValueError as error:
+            return self._fail(str(error))
+        if not self.motion_limits_enabled:
+            return SafetyResult(True)
         if abs(roll) > self.max_roll or abs(pitch) > self.max_pitch:
             return self._fail("机身姿态超过安全限制")
         if np.any(q < self.joint_lower - self.state_joint_margin) or np.any(q > self.joint_upper + self.state_joint_margin):
@@ -273,6 +298,8 @@ class Go2Safety:
         target = _array(target, "target")
         q = _array(joint_pos, "joint_pos")
         dq = _array(joint_vel, "joint_vel")
+        if not self.motion_limits_enabled:
+            return SafetyResult(True)
         if np.any(np.abs(action) > self.max_action):
             return self._fail("策略动作超过安全限制")
         if np.any(np.abs(action - previous_action) > self.max_action_delta):
@@ -287,11 +314,15 @@ class Go2Safety:
         return SafetyResult(True)
 
     def limit_target(self, target):
+        if not self.motion_limits_enabled:
+            return _array(target, 'target').copy()
         return np.clip(_array(target, "target"), self.joint_lower, self.joint_upper)
 
 
     def limit_pd_target(self, target, joint_pos, joint_vel, stiffness, damping, cap):
         """将目标投影至角度与PD力矩允许区间的交集；无可行解时停止。"""
+        if not self.motion_limits_enabled:
+            return _array(target, 'target').copy()
         q, dq = _array(joint_pos, 'q'), _array(joint_vel, 'dq')
         kp, kd = _array(stiffness, 'kp'), _array(damping, 'kd')
         if not np.isfinite(cap) or cap <= 0 or np.any(kp <= 0):
@@ -321,6 +352,14 @@ class Go2Command:
     reason: str = ""
 
 
+def require_safe_attitude(roll, pitch, limit=.35):
+    """Fall stop is independent of trajectory and torque shaping switches."""
+    if not np.isfinite([roll, pitch, limit]).all() or not 0 < limit < np.pi/2:
+        raise ValueError('摔倒保护姿态或阈值无效')
+    if max(abs(roll), abs(pitch)) > limit:
+        raise ValueError(f'摔倒保护：机身姿态超过安全限制（roll={roll:.3f}, pitch={pitch:.3f}, 阈值={limit:.3f}rad）')
+
+
 def quaternion_to_roll_pitch(quaternion_wxyz):
     q = np.asarray(quaternion_wxyz, dtype=np.float64)
     if q.shape != (4,) or not np.isfinite(q).all() or np.linalg.norm(q) < 1e-6:
@@ -345,12 +384,15 @@ class Go2Controller:
             self.policy.eval()
         fsm_config = config.data["fsm"]
         self.fsm = Go2FSM(config.default_joint_pos, fsm_config["stand_duration"])
-        self.safety = Go2Safety(config.safety, config.stiffness, config.damping, config.torque_limits)
+        self.safety = Go2Safety(config.safety, config.stiffness, config.damping, config.torque_limits,
+                                motion_limits_enabled=config.software_motion_limits_enabled)
         self.safety.joint_velocity_limits = model_joint_velocity_limits(config)
         self.policy_pd_limit = None
         self.action_step_limit = self.safety.max_action_delta
         self.policy_target_mode = config.safety.get('policy_target_mode', 'reject')
-        if self.policy_target_mode not in ('reject', 'clip'):
+        if not config.software_motion_limits_enabled:
+            self.policy_target_mode = 'passthrough'
+        if self.policy_target_mode not in ('reject', 'clip', 'passthrough'):
             raise ValueError('policy_target_mode必须为reject或clip')
         self.last_target_processing = None
         self.stand_kp = _array(fsm_config["stand_kp"], "stand_kp")
@@ -364,8 +406,13 @@ class Go2Controller:
         self.command = np.zeros(3, dtype=np.float32)
 
     def validate_policy(self):
+        sample = torch.zeros((1, int(self.config.data["policy"]["num_observations"])), dtype=torch.float32)
         with torch.inference_mode():
-            output = self.policy(torch.zeros((1, int(self.config.data["policy"]["num_observations"])), dtype=torch.float32))
+            # TorchScript may compile its optimized graph on the second call.
+            # Complete that work before DDS handoff, rather than in the servo loop.
+            repeats = 32 if isinstance(self.policy, torch.jit.ScriptModule) else 1
+            for _ in range(repeats):
+                output = self.policy(sample)
         action = output.detach().cpu().numpy().reshape(-1)
         if action.shape != (12,) or not np.isfinite(action).all():
             raise ValueError(f"策略输出无效: shape={action.shape}")
@@ -431,13 +478,20 @@ class Go2Controller:
             output = self.policy(tensor)
         action = output.detach().cpu().numpy().reshape(-1).astype(np.float32)
         target = action_to_target(action, self.config.data)
-        self.previous_policy_action = np.clip(action, -self.config.data["actions"]["clip"],
-                                               self.config.data["actions"]["clip"]).copy()
+        self.previous_policy_action = (np.clip(action, -self.config.data["actions"]["clip"],
+                                               self.config.data["actions"]["clip"]) if self.config.software_motion_limits_enabled else action).copy()
         return action, target
 
     def process_policy_action(self, action):
         """约束有限且幅值合法的动作变化；幅值异常仍交由原保护拒绝。"""
         raw = _array(action, "action")
+        if not self.config.software_motion_limits_enabled:
+            delta = float(np.max(np.abs(raw-self.last_action)))
+            self.last_action_processing = {'mode':'passthrough','step_limit':None,
+                'previous_action':self.last_action.tolist(),'raw_action':raw.tolist(),
+                'applied_action':raw.tolist(),'limited_joints':[],
+                'max_requested_delta':delta,'max_applied_delta':delta}
+            return raw.copy()
         if not np.isfinite(self.action_step_limit) or not 0 < self.action_step_limit <= self.safety.max_action_delta:
             raise ValueError("动作步长限幅不得超出原安全阈值")
         applied = raw.copy()
@@ -591,6 +645,8 @@ class Go2DDSTransport:
     """在LowState/LowCmd与Go2Controller之间转换。"""
 
     def __init__(self, config, publish=True):
+        if publish:
+            config.require_hardware_deployment_allowed()
         try:
             from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
             from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
