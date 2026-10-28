@@ -94,14 +94,4 @@ doc/                 安装说明与项目图片
 logs/                本地训练及运行产物，不随Git分发
 ```
 
-## 开发
-
-```bash
-make test       # 离线回归，关闭可选DDS集成测试
-make check      # 补丁格式检查
-make clean      # 清除源码目录的Python缓存
-```
-
-可用 `make test PYTHON=/path/to/python` 指定解释器。
-
 本项目基于 [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) 和 [HIMLoco](https://github.com/InternRobotics/HIMLoco) 等开源实现开发，许可证见 [LICENSE](LICENSE)。
